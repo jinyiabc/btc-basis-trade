@@ -1,0 +1,35 @@
+# Logs
+*.log
+alerts.log
+btc_basis_monitor.log
+
+# Config with potential API keys
+config.json
+
+# Generated analysis files
+btc_basis_analysis_*.txt
+btc_basis_analysis_*.json
+backtest_result_*.json
+basis_history_*.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
