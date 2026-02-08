@@ -1,0 +1,14 @@
+# IBKR Integration Requirements
+
+# Core dependencies (already in requirements.txt)
+requests>=2.31.0
+python-dateutil>=2.8.2
+
+# For Client Portal API
+urllib3>=2.0.0
+
+# For TWS API (optional - choose one method)
+ib-insync>=0.9.86
+
+# Installation:
+# pip install -r requirements_ibkr.txt

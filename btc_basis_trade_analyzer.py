@@ -384,6 +384,41 @@ class MarketDataFetcher:
             return None
 
     @staticmethod
+    def fetch_ibkr_data(expiry='202603', futures_symbol='MBT') -> Optional[Dict]:
+        """
+        Fetch both spot and futures from IBKR in one connection
+
+        Returns:
+            Dictionary with complete basis data or None if failed
+        """
+        try:
+            # Import unified fetcher (optional dependency)
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(__file__))
+            from fetch_btc_ibkr_unified import UnifiedBTCFetcher
+
+            # Try to connect to IBKR (try multiple ports)
+            ports = [7496, 7497, 4001, 4002]  # Live, Paper, Gateway Live, Gateway Paper
+
+            for port in ports:
+                fetcher = UnifiedBTCFetcher(port=port, client_id=1)
+
+                if fetcher.connect():
+                    try:
+                        # Get complete data
+                        data = fetcher.get_complete_basis_data(expiry, futures_symbol)
+                        return data
+                    finally:
+                        fetcher.disconnect()
+
+            return None
+
+        except Exception as e:
+            # IBKR not available, will fall back to other methods
+            return None
+
+    @staticmethod
     def create_sample_data() -> MarketData:
         """Create sample market data for testing"""
         spot_price = 95000.0
@@ -412,26 +447,52 @@ def main():
 
     # Try to fetch live data
     print("Fetching market data...")
-    spot_price = fetcher.fetch_coinbase_spot()
-    fear_greed = fetcher.fetch_fear_greed_index()
 
-    if spot_price:
-        print(f"[OK] Live BTC Spot: ${spot_price:,.2f}")
+    # Method 1: Try IBKR for BOTH spot and futures (best - real CME data)
+    print("[1/3] Trying IBKR (spot + futures)...")
+    ibkr_data = fetcher.fetch_ibkr_data()
 
-        # For demonstration, assume 2% monthly basis (typical)
-        futures_price = spot_price * 1.02
-        expiry = datetime.now() + timedelta(days=30)
+    if ibkr_data:
+        print(f"[OK] IBKR: Spot ${ibkr_data['spot_price']:,.2f} (from {ibkr_data['spot_source']})")
+        print(f"[OK] IBKR: Futures ${ibkr_data['futures_price']:,.2f} ({ibkr_data['futures_local_symbol']})")
+
+        fear_greed = fetcher.fetch_fear_greed_index()
 
         market = MarketData(
-            spot_price=spot_price,
-            futures_price=futures_price,
-            futures_expiry_date=expiry,
-            etf_price=spot_price / 1800,  # Approximate IBIT price
-            fear_greed_index=fear_greed
+            spot_price=ibkr_data['spot_price'],
+            futures_price=ibkr_data['futures_price'],
+            futures_expiry_date=datetime.strptime(ibkr_data['expiry'] + '27', '%Y%m%d'),  # Last Friday approx
+            etf_price=ibkr_data['etf_price'],
+            fear_greed_index=fear_greed,
+            cme_open_interest=ibkr_data.get('volume')
         )
+
     else:
-        print("[!]  Using sample data (live fetch failed)")
-        market = fetcher.create_sample_data()
+        # Method 2: Try Coinbase spot + estimated futures (fallback)
+        print("[2/3] IBKR unavailable, trying Coinbase spot...")
+        spot_price = fetcher.fetch_coinbase_spot()
+        fear_greed = fetcher.fetch_fear_greed_index()
+
+        if spot_price:
+            print(f"[OK] Coinbase Spot: ${spot_price:,.2f}")
+            print("[!]  Using ESTIMATED futures (spot * 1.02)")
+
+            # For demonstration, assume 2% monthly basis (typical)
+            futures_price = spot_price * 1.02
+            expiry = datetime.now() + timedelta(days=30)
+
+            market = MarketData(
+                spot_price=spot_price,
+                futures_price=futures_price,
+                futures_expiry_date=expiry,
+                etf_price=spot_price / 1800,  # Approximate IBIT price
+                fear_greed_index=fear_greed
+            )
+        else:
+            # Method 3: Use sample data (last resort)
+            print("[3/3] All live sources failed")
+            print("[!]  Using sample data")
+            market = fetcher.create_sample_data()
 
     # Generate and print report
     report = analyzer.generate_report(market)
