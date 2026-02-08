@@ -176,6 +176,14 @@ class IBKRHistoricalFetcher:
 
             self.log(f"Fetching historical futures: {future.localSymbol}...")
 
+            # Get actual expiry date from IBKR
+            actual_expiry = None
+            if future.lastTradeDateOrContractMonth:
+                expiry_str = future.lastTradeDateOrContractMonth
+                if len(expiry_str) == 8:  # YYYYMMDD format
+                    actual_expiry = datetime.strptime(expiry_str, '%Y%m%d')
+                    self.log(f"[*] Contract expiry: {actual_expiry.strftime('%Y-%m-%d (%A)')}")
+
             # Calculate duration
             if not end_date:
                 end_date = datetime.now()
@@ -216,7 +224,8 @@ class IBKRHistoricalFetcher:
 
                 result.append({
                     'date': date_obj,
-                    'futures_price': futures_price
+                    'futures_price': futures_price,
+                    'expiry': actual_expiry  # Include actual expiry from IBKR
                 })
 
             return result
@@ -320,10 +329,11 @@ class IBKRHistoricalFetcher:
             )
 
             if futures_data:
-                expiry_date = self.get_futures_expiry_date(expiry)
                 for entry in futures_data:
                     date_key = entry['date'].date()
                     if date_key not in all_futures_data:
+                        # Use actual expiry from IBKR (in entry), fallback to calculation
+                        expiry_date = entry.get('expiry') or self.get_futures_expiry_date(expiry)
                         all_futures_data[date_key] = {
                             'futures_price': entry['futures_price'],
                             'expiry': expiry_date
