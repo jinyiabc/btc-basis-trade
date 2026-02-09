@@ -53,7 +53,8 @@ def cmd_analyze(args):
         from btc_basis.data.ibkr import IBKRFetcher
 
         print("[1/3] Trying IBKR (spot + futures)...")
-        ibkr = IBKRFetcher()
+        ibkr_config = config_loader.ibkr
+        ibkr = IBKRFetcher.from_config(ibkr_config)
         if ibkr.connect():
             ibkr_data = ibkr.get_complete_basis_data()
             ibkr.disconnect()

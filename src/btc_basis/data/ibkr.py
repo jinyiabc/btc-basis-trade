@@ -64,6 +64,24 @@ class IBKRFetcher(BaseFetcher):
         self.ib = None
         self.connected = False
 
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]) -> "IBKRFetcher":
+        """
+        Create IBKRFetcher from config dictionary.
+
+        Args:
+            config: IBKR config dict with host, port, client_id, timeout
+
+        Returns:
+            Configured IBKRFetcher instance
+        """
+        return cls(
+            host=config.get("host", "127.0.0.1"),
+            port=config.get("port"),
+            client_id=config.get("client_id", 1),
+            timeout=config.get("timeout", 10),
+        )
+
     def _get_ib(self):
         """Get ib_insync IB instance (lazy import)."""
         if self.ib is None:

@@ -29,6 +29,12 @@ class ConfigLoader:
             "strong_entry_basis": 0.01,
             "min_entry_basis": 0.005,
         },
+        "ibkr": {
+            "host": "127.0.0.1",
+            "port": None,  # None = auto-detect (try 7497, 4002, 7496, 4001)
+            "client_id": 1,
+            "timeout": 10,
+        },
     }
 
     def __init__(self, config_path: Optional[str] = None):
@@ -137,3 +143,8 @@ class ConfigLoader:
     @property
     def alert_thresholds(self) -> Dict[str, float]:
         return self.get("alert_thresholds")
+
+    @property
+    def ibkr(self) -> Dict[str, Any]:
+        """Get IBKR connection settings."""
+        return self.get("ibkr")
