@@ -21,33 +21,89 @@ Bitcoin Basis Trade Analysis Toolkit - A Python toolkit for analyzing and monito
 
 ## Architecture
 
-### Module Structure
+### Package Structure
 
-The codebase has 4 main executable scripts that share common core classes:
+The codebase is organized as a modular Python package under `src/btc_basis/`:
 
-**Core Data Classes** (defined in `btc_basis_trade_analyzer.py`):
-- `MarketData`: Encapsulates spot price, futures price, expiry date, and calculated basis metrics
-- `TradeConfig`: Configuration parameters (account size, leverage, funding cost, thresholds)
-- `Signal` enum: Trading signals (STRONG_ENTRY, ACCEPTABLE_ENTRY, PARTIAL_EXIT, FULL_EXIT, STOP_LOSS)
-- `BasisTradeAnalyzer`: Core analysis engine with methods for returns calculation, signal generation, risk assessment, and position sizing
-- `MarketDataFetcher`: Fetches live data from Coinbase (spot), Alternative.me (Fear & Greed)
+```
+btc-basis-trade/
+├── main.py                          # Unified CLI entry point
+├── setup.py                         # Package installation config
+├── config/
+│   └── config.json                  # User configuration
+├── config_example.json
+├── data/                            # Sample CSV data files
+├── output/                          # Generated reports, logs, backtests
+├── tests/
+└── src/btc_basis/                   # Main package
+    ├── __init__.py
+    ├── core/                        # Core business logic
+    │   ├── models.py                # Signal, TradeConfig, MarketData
+    │   ├── analyzer.py              # BasisTradeAnalyzer
+    │   └── calculator.py            # BasisCalculator (shared math)
+    ├── data/                        # Data fetchers
+    │   ├── base.py                  # BaseFetcher ABC
+    │   ├── coinbase.py              # CoinbaseFetcher, FearGreedFetcher
+    │   ├── binance.py               # BinanceFetcher
+    │   ├── ibkr.py                  # IBKRFetcher, IBKRHistoricalFetcher
+    │   └── historical.py            # RollingDataProcessor
+    ├── backtest/                    # Backtesting engine
+    │   ├── engine.py                # Backtester, Trade, BacktestResult
+    │   └── costs.py                 # TradingCosts calculations
+    ├── monitor/                     # Monitoring daemon
+    │   └── daemon.py                # BasisMonitor
+    └── utils/                       # Shared utilities
+        ├── config.py                # ConfigLoader
+        ├── logging.py               # LoggingMixin, setup_logging
+        ├── expiry.py                # Futures expiry utilities
+        └── io.py                    # ReportWriter
+```
 
-**Executable Scripts**:
-1. `btc_basis_trade_analyzer.py`: Single-run analysis with current market data
-2. `btc_basis_monitor.py`: Continuous monitoring daemon that imports analyzer classes
-3. `btc_basis_backtest.py`: Backtesting engine that imports analyzer and extends with `Trade`, `BacktestResult` classes
-4. `btc_basis_cli.py`: Interactive CLI menu that orchestrates all three above scripts
+### Core Module (`src/btc_basis/core/`)
+
+- **models.py**: Data classes
+  - `Signal` enum: Trading signals (STRONG_ENTRY, ACCEPTABLE_ENTRY, PARTIAL_EXIT, FULL_EXIT, STOP_LOSS)
+  - `TradeConfig`: Configuration parameters (account size, leverage, funding cost, thresholds)
+  - `MarketData`: Encapsulates spot price, futures price, expiry date, and calculated basis metrics
+- **analyzer.py**: `BasisTradeAnalyzer` - core analysis engine with methods for returns calculation, signal generation, risk assessment, and position sizing
+- **calculator.py**: `BasisCalculator` - centralized basis math used across modules
+
+### Data Module (`src/btc_basis/data/`)
+
+- **base.py**: `BaseFetcher` abstract base class defining the interface for all data sources
+- **coinbase.py**: `CoinbaseFetcher` (BTC spot), `FearGreedFetcher` (sentiment)
+- **binance.py**: `BinanceFetcher` for Binance spot/futures
+- **ibkr.py**: Unified `IBKRFetcher` and `IBKRHistoricalFetcher` for Interactive Brokers
+- **historical.py**: `RollingDataProcessor` for historical data handling
+
+### Backtest Module (`src/btc_basis/backtest/`)
+
+- **engine.py**: `Backtester` class with `Trade` and `BacktestResult` dataclasses
+- **costs.py**: `TradingCosts` for comprehensive cost calculations
+
+### Monitor Module (`src/btc_basis/monitor/`)
+
+- **daemon.py**: `BasisMonitor` for continuous monitoring with alert generation
+
+### Utils Module (`src/btc_basis/utils/`)
+
+- **config.py**: `ConfigLoader` with default config management
+- **logging.py**: `LoggingMixin` for consistent logging across modules
+- **expiry.py**: `get_last_friday_of_month`, `get_front_month_expiry`, `generate_expiry_schedule`
+- **io.py**: `ReportWriter` for text and JSON output generation
 
 ### Data Flow
 
 ```
-Config (JSON) → TradeConfig → BasisTradeAnalyzer
+ConfigLoader → TradeConfig → BasisTradeAnalyzer
                                       ↓
-MarketDataFetcher → MarketData → Analyzer.generate_signal() → Signal
+DataFetchers → MarketData → Analyzer.generate_signal() → Signal
                                       ↓
                               Analyzer.assess_risk() → Risk Dict
                                       ↓
                               Analyzer.calculate_position_sizing() → Position Dict
+                                      ↓
+                              ReportWriter → output/*.txt, output/*.json
 ```
 
 ### Signal Generation Logic
@@ -65,56 +121,57 @@ Additional stop conditions: ETF discount > 1%, funding cost > basis
 
 ## Running the Tools
 
-### Quick Analysis
-```bash
-python btc_basis_trade_analyzer.py
-```
-Generates `btc_basis_analysis_YYYYMMDD_HHMMSS.txt` and `.json` in current directory.
+### Installation
 
-### Interactive Menu (Recommended for Users)
 ```bash
-python btc_basis_cli.py
+pip install -e .
 ```
 
-### Continuous Monitoring
+### Unified CLI (Recommended)
+
 ```bash
-# Every 5 minutes (recommended)
-python btc_basis_monitor.py --interval 300
+# Single analysis
+python main.py analyze
 
-# Single check
-python btc_basis_monitor.py --once
+# Interactive menu
+python main.py cli
 
-# Custom config
-python btc_basis_monitor.py --config my_config.json
+# Continuous monitoring (every 5 minutes)
+python main.py monitor --interval 300
+
+# Single monitoring check
+python main.py monitor --once
+
+# Backtesting with CSV data
+python main.py backtest --data data/historical_basis.csv --holding-days 30
+
+# Backtesting with synthetic data
+python main.py backtest --start 2024-01-01 --end 2024-12-31
 ```
-Outputs: `btc_basis_monitor.log`, `alerts.log`, `basis_history_YYYYMMDD.json`
 
-### Backtesting
-```bash
-# Generate synthetic data for 2024
-python btc_basis_backtest.py --start 2024-01-01 --end 2024-12-31
+### Command Reference
 
-# Use CSV data (format: date,spot_price,futures_price,futures_expiry)
-python btc_basis_backtest.py --data historical_basis.csv --holding-days 30
-
-# Output to specific file
-python btc_basis_backtest.py --data data.csv --output results.json
-```
-Generates `backtest_result_YYYYMMDD_HHMMSS.json` with trade-by-trade details.
+| Command | Description |
+|---------|-------------|
+| `python main.py analyze` | Single-run analysis with current market data |
+| `python main.py cli` | Interactive CLI menu |
+| `python main.py monitor --once` | One-time monitoring check |
+| `python main.py monitor --interval N` | Continuous monitoring every N seconds |
+| `python main.py backtest --data FILE` | Run backtest on historical CSV data |
 
 ## Configuration
 
-All scripts read from `config.json` (copy from `config_example.json`):
+Configuration is read from `config/config.json` (copy from `config_example.json`):
 
 ```json
 {
-  "account_size": 200000,           // Total capital ($)
-  "spot_target_pct": 0.50,          // 50% to spot leg
-  "futures_target_pct": 0.50,       // 50% to futures leg
-  "funding_cost_annual": 0.05,      // 5% annual funding (SOFR + spread)
-  "leverage": 1.0,                  // 1x = no leverage
-  "cme_contract_size": 5.0,         // BTC per CME contract
-  "min_monthly_basis": 0.005,       // 0.5% minimum entry threshold
+  "account_size": 200000,
+  "spot_target_pct": 0.50,
+  "futures_target_pct": 0.50,
+  "funding_cost_annual": 0.05,
+  "leverage": 1.0,
+  "cme_contract_size": 5.0,
+  "min_monthly_basis": 0.005,
   "alert_thresholds": { ... }
 }
 ```
@@ -123,7 +180,7 @@ All scripts read from `config.json` (copy from `config_example.json`):
 
 ## Key Formulas (Implementation Reference)
 
-**Basis Calculations** (in `MarketData` properties):
+**Basis Calculations** (in `BasisCalculator` and `MarketData` properties):
 ```python
 basis_absolute = futures_price - spot_price
 basis_percent = basis_absolute / spot_price
@@ -152,14 +209,20 @@ actual_futures_value = contracts * cme_contract_size * spot_price
 ## Data Sources
 
 **Currently Integrated**:
-- Coinbase API: `https://api.coinbase.com/v2/prices/BTC-USD/spot` (public, no key)
-- Fear & Greed Index: `https://api.alternative.me/fng/` (public)
-- CoinGlass: `https://open-api.coinglass.com/public/v2/indicator/bitcoin_basis` (public endpoint, API key for premium)
+- **Coinbase API**: `https://api.coinbase.com/v2/prices/BTC-USD/spot` (public, no key)
+- **Fear & Greed Index**: `https://api.alternative.me/fng/` (public)
+- **Binance**: Spot and futures prices
+- **IBKR**: CME futures via Client Portal API (requires IBKR account)
 
-**Futures Data Limitation**: Currently uses estimated futures prices (spot × 1.02 for 2% basis). For production, integrate:
-- CME Group API (requires account)
-- IBKR Client Portal API
-- Deribit API
+**Data Fetcher Hierarchy**:
+```
+BaseFetcher (ABC)
+├── CoinbaseFetcher
+├── FearGreedFetcher
+├── BinanceFetcher
+├── IBKRFetcher
+└── IBKRHistoricalFetcher
+```
 
 ## Risk Assessment Categories
 
@@ -177,35 +240,61 @@ Returns dict with emoji indicators: ✅ (low/moderate), ⚠️ (high), ❌ (crit
 
 ### Adding New Data Sources
 
-Extend `MarketDataFetcher` class in `btc_basis_trade_analyzer.py`:
+Create a new fetcher by extending `BaseFetcher` in `src/btc_basis/data/`:
+
 ```python
-@staticmethod
-def fetch_cme_futures() -> Optional[Dict]:
-    # Implement CME API call
-    # Return: {'futures_price': float, 'expiry': datetime, 'open_interest': int}
+from btc_basis.data.base import BaseFetcher
+
+class MyExchangeFetcher(BaseFetcher):
+    def fetch_spot_price(self) -> float:
+        # Implement API call
+        pass
+
+    def fetch_futures_data(self) -> dict:
+        # Return: {'futures_price': float, 'expiry': datetime, 'open_interest': int}
+        pass
 ```
 
 ### Custom Alert Notifications
 
-Modify `BasisMonitor.send_alert()` in `btc_basis_monitor.py`:
+Extend `BasisMonitor.send_alert()` in `src/btc_basis/monitor/daemon.py`:
+
 ```python
 def send_alert(self, message: str, data: Dict):
-    # Currently writes to alerts.log
+    # Currently writes to output/alerts.log
     # Add: email (smtplib), SMS (Twilio), webhooks (requests.post)
 ```
 
 ### Additional Signal Logic
 
-Extend `BasisTradeAnalyzer.generate_signal()` with new conditions:
+Extend `BasisTradeAnalyzer.generate_signal()` in `src/btc_basis/core/analyzer.py`:
 - Always check `monthly_basis` first (primary signal)
 - Return `(Signal, reason: str)` tuple
-- Update `Signal` enum if adding new signal types
+- Update `Signal` enum in `models.py` if adding new signal types
+
+### Adding New Backtest Metrics
+
+Extend `BacktestResult` dataclass in `src/btc_basis/backtest/engine.py`:
+
+```python
+@dataclass
+class BacktestResult:
+    # Add new fields
+    sortino_ratio: float = 0.0
+    max_consecutive_losses: int = 0
+
+    @property
+    def calmar_ratio(self) -> float:
+        return self.total_return / self.max_drawdown if self.max_drawdown > 0 else 0.0
+```
 
 ## Common Development Tasks
 
 ### Testing with Custom Market Data
+
 ```python
-from btc_basis_trade_analyzer import BasisTradeAnalyzer, MarketData, TradeConfig
+from btc_basis.core.models import Signal, TradeConfig, MarketData
+from btc_basis.core.analyzer import BasisTradeAnalyzer
 from datetime import datetime, timedelta
 
 market = MarketData(
@@ -222,23 +311,25 @@ signal, reason = analyzer.generate_signal(market)
 print(f"{signal}: {reason}")
 ```
 
-### Adding New Backtest Metrics
+### Using the Package Programmatically
 
-Extend `BacktestResult` dataclass in `btc_basis_backtest.py`:
 ```python
-@dataclass
-class BacktestResult:
-    # Add new fields
-    sortino_ratio: float = 0.0
-    max_consecutive_losses: int = 0
+from btc_basis import Signal, TradeConfig, MarketData, BasisTradeAnalyzer
+from btc_basis.data.coinbase import CoinbaseFetcher
+from btc_basis.utils.config import ConfigLoader
 
-    # Add computed properties
-    @property
-    def calmar_ratio(self) -> float:
-        return self.total_return / self.max_drawdown if self.max_drawdown > 0 else 0.0
+# Load config
+config = ConfigLoader.load("config/config.json")
+trade_config = TradeConfig(**config)
+
+# Fetch live data
+fetcher = CoinbaseFetcher()
+spot_price = fetcher.fetch_spot_price()
+
+# Analyze
+analyzer = BasisTradeAnalyzer(trade_config)
+# ...
 ```
-
-Calculate in `Backtester.run_backtest()` after main loop.
 
 ## Important Constraints
 
@@ -248,25 +339,29 @@ Calculate in `Backtester.run_backtest()` after main loop.
 
 **Funding Cost Timing**: Applied linearly over holding period in backtester: `(funding_rate / 365) × holding_days × position_value`
 
-**Live Data Fallback**: If `MarketDataFetcher` fails (network issue, API down), scripts use sample data. Check for "⚠️ Using sample data" in output.
+**Live Data Fallback**: If data fetchers fail (network issue, API down), scripts use sample data. Check for "Using sample data" in output.
+
+**Futures Expiry**: Uses rolling front-month contracts with automatic expiry detection via `utils/expiry.py`.
 
 ## Output Files Reference
 
+All output files are written to the `output/` directory:
+
 | File Pattern | Generated By | Contains |
 |--------------|--------------|----------|
-| `btc_basis_analysis_*.txt` | analyzer.py | Human-readable report |
-| `btc_basis_analysis_*.json` | analyzer.py | Structured market data, returns, signals, risks, positions |
-| `btc_basis_monitor.log` | monitor.py | Timestamped monitoring activity |
-| `alerts.log` | monitor.py | Trading alerts only (entry/exit/stop signals) |
-| `basis_history_*.json` | monitor.py | Time-series of basis data points |
-| `backtest_result_*.json` | backtest.py | Trade list, metrics (Sharpe, drawdown, win rate) |
+| `output/btc_basis_analysis_*.txt` | analyze | Human-readable report |
+| `output/btc_basis_analysis_*.json` | analyze | Structured market data, returns, signals, risks, positions |
+| `output/btc_basis_monitor.log` | monitor | Timestamped monitoring activity |
+| `output/alerts.log` | monitor | Trading alerts only (entry/exit/stop signals) |
+| `output/basis_history_*.json` | monitor | Time-series of basis data points |
+| `output/backtest_result_*.json` | backtest | Trade list, metrics (Sharpe, drawdown, win rate) |
 
 All JSON files use ISO-8601 timestamps and can be imported to Excel/pandas.
 
 ## Dependencies
 
 From `requirements.txt`:
-- `requests>=2.31.0`: HTTP client for API calls (Coinbase, CoinGlass, Fear & Greed)
+- `requests>=2.31.0`: HTTP client for API calls (Coinbase, Binance, Fear & Greed)
 - `python-dateutil>=2.8.2`: Date parsing utilities
 
 Standard library only otherwise (json, dataclasses, enum, datetime, argparse, logging, csv).
