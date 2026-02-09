@@ -274,6 +274,37 @@ class IBKRFetcher(BaseFetcher):
             self.log(f"[X] Failed to get futures: {e}")
             return None
 
+    def _fetch_actual_spot_price(self) -> Optional[Dict[str, Any]]:
+        """
+        Fetch actual BTC spot price from Coinbase or Binance.
+
+        Returns:
+            Dictionary with spot_price and source, or None if all sources fail
+        """
+        # Try Coinbase first
+        try:
+            from btc_basis.data.coinbase import CoinbaseFetcher
+            coinbase = CoinbaseFetcher()
+            spot = coinbase.fetch_spot_price()
+            if spot and spot > 0:
+                self.log(f"[OK] Coinbase spot: ${spot:,.2f}")
+                return {"spot_price": spot, "source": "Coinbase"}
+        except Exception as e:
+            self.log(f"[X] Coinbase failed: {e}")
+
+        # Try Binance as fallback
+        try:
+            from btc_basis.data.binance import BinanceFetcher
+            binance = BinanceFetcher()
+            spot = binance.fetch_spot_price()
+            if spot and spot > 0:
+                self.log(f"[OK] Binance spot: ${spot:,.2f}")
+                return {"spot_price": spot, "source": "Binance"}
+        except Exception as e:
+            self.log(f"[X] Binance failed: {e}")
+
+        return None
+
     def get_complete_basis_data(
         self, expiry: str = None, futures_symbol: str = "MBT"
     ) -> Optional[Dict[str, Any]]:
@@ -281,6 +312,8 @@ class IBKRFetcher(BaseFetcher):
         Get complete basis data: spot + futures + calculations.
 
         This is the main method for getting all data in one connection.
+        Spot price is fetched from Coinbase/Binance for accuracy.
+        ETF price is fetched from IBKR for position sizing.
 
         Args:
             expiry: Futures expiry (YYYYMM), None = front-month
@@ -298,8 +331,29 @@ class IBKRFetcher(BaseFetcher):
             expiry = get_front_month_expiry_str()
             self.log(f"[*] Using front-month contract: {expiry}")
 
+        # Fetch actual BTC spot price from Coinbase/Binance
         self.log("\n[*] Fetching BTC Spot Price...")
-        spot_data = self.get_etf_price()
+        actual_spot = self._fetch_actual_spot_price()
+
+        # Also fetch ETF price for position sizing
+        self.log("[*] Fetching ETF price for position sizing...")
+        etf_data = self.get_etf_price()
+
+        # Determine spot price and source
+        if actual_spot:
+            spot_price = actual_spot["spot_price"]
+            spot_source = actual_spot["source"]
+        elif etf_data:
+            # Fall back to ETF proxy
+            spot_price = etf_data["btc_price"]
+            spot_source = f"{etf_data['source']} (ETF proxy)"
+            self.log(f"[!] Using ETF proxy for spot: ${spot_price:,.2f}")
+        else:
+            self.log("[X] Could not get spot price from any source")
+            return None
+
+        # Get ETF price (for position sizing), default if not available
+        etf_price = etf_data["etf_price"] if etf_data else None
 
         self.log("\n[*] Fetching BTC Futures Price...")
         futures_data = self.fetch_futures_price(expiry, futures_symbol)
@@ -308,12 +362,6 @@ class IBKRFetcher(BaseFetcher):
             self.log("[X] Could not get futures data")
             return None
 
-        if not spot_data:
-            self.log("[!] Warning: Could not get spot price, returning futures only")
-            return futures_data
-
-        # Calculate basis
-        spot_price = spot_data["btc_price"]
         futures_price = futures_data["futures_price"]
 
         basis_absolute = futures_price - spot_price
@@ -328,7 +376,7 @@ class IBKRFetcher(BaseFetcher):
         annualized_basis = basis_percent * (365 / days_to_expiry) if days_to_expiry > 0 else 0
 
         self.log(f"\n[*] Basis Calculation:")
-        self.log(f"    Spot:        ${spot_price:,.2f} (from {spot_data['source']})")
+        self.log(f"    Spot:        ${spot_price:,.2f} (from {spot_source})")
         self.log(f"    Futures:     ${futures_price:,.2f}")
         self.log(f"    Basis:       ${basis_absolute:,.2f} ({basis_percent:.2f}%)")
         self.log(f"    Monthly:     {monthly_basis:.2f}%")
@@ -337,8 +385,8 @@ class IBKRFetcher(BaseFetcher):
         return {
             # Spot data
             "spot_price": spot_price,
-            "spot_source": spot_data["source"],
-            "etf_price": spot_data["etf_price"],
+            "spot_source": spot_source,
+            "etf_price": etf_price,
             # Futures data
             "futures_price": futures_price,
             "futures_symbol": futures_data["symbol"],
@@ -356,7 +404,7 @@ class IBKRFetcher(BaseFetcher):
             "annualized_basis": annualized_basis,
             # Metadata
             "timestamp": datetime.now(),
-            "data_source": "IBKR Unified (Spot + Futures)",
+            "data_source": "IBKR + Coinbase/Binance",
         }
 
 
