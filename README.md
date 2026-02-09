@@ -8,15 +8,27 @@ A comprehensive Python toolkit for analyzing and monitoring Bitcoin cash-and-car
 - **Automated signal generation** - Entry, exit, and stop-loss signals
 - **Risk assessment** - Evaluates funding, basis, liquidity, and crowding risks
 - **Position sizing** - Calculates ETF shares and CME futures contracts needed
+- **Backtesting engine** - Test strategy on historical data
 - **Continuous monitoring** - Background daemon for alert generation
+- **IBKR integration** - Real CME futures data via Interactive Brokers
+- **Multi-exchange support** - Coinbase, Binance, IBKR data sources
 - **Data export** - JSON and text report generation
-- **Live market data** - Fetches from Coinbase, CoinGlass, Fear & Greed Index
 
 ## Installation
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Clone the repository
+git clone https://github.com/jinyiabc/btc-basis-trade.git
+cd btc-basis-trade
+
+# Install package
+pip install -e .
+
+# With IBKR support
+pip install -e ".[ibkr]"
+
+# With development tools
+pip install -e ".[dev]"
 ```
 
 ## Quick Start
@@ -26,13 +38,28 @@ pip install -r requirements.txt
 Run a one-time analysis with current market data:
 
 ```bash
-python btc_basis_trade_analyzer.py
+python main.py analyze
 ```
 
 Output:
 - Console report with full analysis
-- `btc_basis_analysis_YYYYMMDD_HHMMSS.txt` - Text report
-- `btc_basis_analysis_YYYYMMDD_HHMMSS.json` - JSON data export
+- `output/analysis/btc_basis_analysis_*.txt` - Text report
+- `output/analysis/btc_basis_analysis_*.json` - JSON data export
+
+### Backtesting
+
+Test strategy on historical data:
+
+```bash
+# With sample data
+python main.py backtest
+
+# With custom CSV file
+python main.py backtest --data data/samples/realistic_basis_2024.csv
+
+# With date range
+python main.py backtest --start 2024-01-01 --end 2024-12-31
+```
 
 ### Continuous Monitoring
 
@@ -40,18 +67,24 @@ Run continuous monitoring with alerts:
 
 ```bash
 # Check every 5 minutes (300 seconds)
-python btc_basis_monitor.py --interval 300
+python main.py monitor --interval 300
 
 # Run once and exit
-python btc_basis_monitor.py --once
+python main.py monitor --once
 
 # Use custom config file
-python btc_basis_monitor.py --config my_config.json
+python main.py monitor --config config/config.json
+```
+
+### Interactive CLI
+
+```bash
+python main.py cli
 ```
 
 ## Configuration
 
-Create `config.json` (copy from `config_example.json`):
+Create `config/config.json` (copy from `config/config.example.json`):
 
 ```json
 {
@@ -90,12 +123,12 @@ The analyzer generates the following signals:
 
 | Signal | Condition | Action |
 |--------|-----------|--------|
-| 🟢 **STRONG_ENTRY** | Monthly basis > 1.0% | Enter position |
-| 🟡 **ACCEPTABLE_ENTRY** | Monthly basis 0.5-1.0% | Consider entry if funding low |
-| ⭕ **NO_ENTRY** | Monthly basis < 0.5% | Do not enter |
-| 🟠 **PARTIAL_EXIT** | Monthly basis > 2.5% | Close 50% of position |
-| 🔴 **FULL_EXIT** | Monthly basis > 3.5% | Close 100% of position |
-| ❌ **STOP_LOSS** | Basis negative or < 0.2% | Exit immediately |
+| **STRONG_ENTRY** | Monthly basis > 1.0% | Enter position |
+| **ACCEPTABLE_ENTRY** | Monthly basis 0.5-1.0% | Consider entry if funding low |
+| **NO_ENTRY** | Monthly basis < 0.5% | Do not enter |
+| **PARTIAL_EXIT** | Monthly basis > 2.5% | Close 50% of position |
+| **FULL_EXIT** | Monthly basis > 3.5% | Close 100% of position |
+| **STOP_LOSS** | Basis negative or < 0.2% | Exit immediately |
 
 ## Example Output
 
@@ -104,7 +137,7 @@ The analyzer generates the following signals:
 BITCOIN BASIS TRADE ANALYSIS
 ======================================================================
 
-📊 MARKET DATA
+[*] MARKET DATA
 ----------------------------------------------------------------------
 Spot Price:           $95,000.00
 Futures Price:        $97,200.00
@@ -112,24 +145,24 @@ Futures Expiry:       2026-03-08 (30 days)
 ETF Price (IBIT):     $53.50
 Fear & Greed Index:   0.75
 
-💰 BASIS ANALYSIS
+[*] BASIS ANALYSIS
 ----------------------------------------------------------------------
 Basis (Absolute):     $2,200.00
 Basis (Percent):      2.32%
 Monthly Basis:        2.32%
 
-📈 RETURN CALCULATIONS
+[*] RETURN CALCULATIONS
 ----------------------------------------------------------------------
 Gross Annualized:     28.18%
 Funding Cost:         5.00% (annualized)
 Net Annualized:       23.18%
 
-🎯 TRADING SIGNAL
+[*] TRADING SIGNAL
 ----------------------------------------------------------------------
-Signal:  🟠 PARTIAL_EXIT
+Signal:  [~] PARTIAL_EXIT
 Reason:  Elevated basis (>2.5% monthly) - partial exit
 
-📋 POSITION SIZING (Account: $200,000)
+[*] POSITION SIZING (Account: $200,000)
 ----------------------------------------------------------------------
 ETF Shares (IBIT):    1,869 shares
 ETF Value:            $100,000.00
@@ -137,17 +170,68 @@ CME Futures Contracts: 1 contract(s)
 Futures BTC Amount:   5.00 BTC
 Futures Notional:     $475,000.00
 Total Exposure:       $575,000.00
-Delta Neutral:        ✅ Yes
+Delta Neutral:        [OK] Yes
 
-⚠️  RISK ASSESSMENT
+[!]  RISK ASSESSMENT
 ----------------------------------------------------------------------
-Funding              ✅ MODERATE - Normal funding environment
-Basis                ✅ LOW - Positive contango
-Liquidity            ✅ LOW - ETF tracking NAV closely
-Crowding             ✅ LOW - Healthy OI levels
-Operational          ✅ LOW - Sufficient time to expiry
+Funding              [OK] MODERATE - Normal funding environment
+Basis                [OK] LOW - Positive contango
+Liquidity            [OK] LOW - ETF tracking NAV closely
+Crowding             [OK] LOW - Healthy OI levels
+Operational          [OK] LOW - Sufficient time to expiry
 
 Overall Risk Level:   LOW
+```
+
+## Project Structure
+
+```
+btc-basis-trade/
+├── main.py                      # Main CLI entry point
+├── setup.py                     # Package installation
+├── requirements.txt             # Python dependencies
+│
+├── config/
+│   ├── config.json              # Your configuration (gitignored)
+│   └── config.example.json      # Example configuration
+│
+├── src/btc_basis/               # Main package
+│   ├── core/                    # Core business logic
+│   │   ├── models.py            # Signal, TradeConfig, MarketData
+│   │   ├── analyzer.py          # BasisTradeAnalyzer
+│   │   └── calculator.py        # BasisCalculator
+│   ├── data/                    # Data fetchers
+│   │   ├── coinbase.py          # Coinbase spot prices
+│   │   ├── binance.py           # Binance spot/futures
+│   │   ├── ibkr.py              # IBKR unified fetcher
+│   │   └── historical.py        # Historical data utils
+│   ├── backtest/                # Backtesting
+│   │   ├── engine.py            # Backtester
+│   │   └── costs.py             # Trading costs
+│   ├── monitor/                 # Monitoring
+│   │   └── daemon.py            # BasisMonitor
+│   └── utils/                   # Utilities
+│       ├── config.py            # ConfigLoader
+│       ├── logging.py           # LoggingMixin
+│       ├── expiry.py            # Futures expiry utils
+│       └── io.py                # ReportWriter
+│
+├── data/
+│   └── samples/                 # Sample CSV files for backtesting
+│
+├── docs/
+│   ├── quickstart.md
+│   ├── architecture.md
+│   └── ibkr/setup.md            # IBKR setup guide
+│
+├── tests/                       # Test suite
+│   ├── test_analyzer.py
+│   └── test_backtest.py
+│
+└── output/                      # Generated files (gitignored)
+    ├── analysis/                # Analysis reports
+    ├── backtests/               # Backtest results
+    └── logs/                    # Log files
 ```
 
 ## Return Calculation
@@ -195,82 +279,13 @@ Rollover periods may compress basis; futures settlement logistics.
 
 **Mitigation**: Plan rollovers in advance; monitor basis curve.
 
-## Position Sizing Example
-
-For $200,000 account with $95,000 BTC spot:
-
-```python
-# Spot Leg (ETF)
-ETF Price: $53.50 (IBIT)
-Target: $100,000 (50% of account)
-Shares: $100,000 / $53.50 = 1,869 shares
-
-# Futures Leg (CME)
-Target: $100,000 (50% of account)
-BTC Amount: $100,000 / $95,000 = 1.05 BTC
-Contracts: 1.05 / 5 BTC per contract = 0.21 → 1 contract (round up)
-Actual Notional: 1 × 5 × $95,000 = $475,000
-
-# Result: Delta-neutral position with ~$100k exposure per leg
-```
-
-## Monitoring & Alerts
-
-The monitor script generates alerts for:
-
-- 🚨 Stop-loss conditions (basis negative or compressed)
-- 🔴 Full exit signals (peak basis >3.5%)
-- 🟠 Partial exit signals (elevated basis >2.5%)
-- 🟢 Entry signals (favorable basis >1.0%)
-- ⚠️ Risk warnings (funding spike, ETF discount, etc.)
-
-Alerts are written to `alerts.log` and can be integrated with:
-- Email (SMTP)
-- SMS (Twilio)
-- Telegram/Discord/Slack webhooks
-- Desktop notifications
-
-## Data Sources
-
-### Current Integrations
-
-| Source | Data | API |
-|--------|------|-----|
-| Coinbase | BTC spot price | Public (free) |
-| Alternative.me | Fear & Greed Index | Public (free) |
-| CoinGlass | Basis data (optional) | Public + paid tiers |
-
-### TODO Integrations
-
-- **CME Group** - Real-time futures prices (requires account)
-- **IBKR API** - Live ETF/futures execution
-- **Deribit** - Crypto-native futures data
-- **Custom data provider** - Proprietary basis feeds
-
-## File Structure
-
-```
-btc-basis-trade/
-├── btc_basis_trade_analyzer.py   # Main analysis script
-├── btc_basis_monitor.py           # Continuous monitoring daemon
-├── requirements.txt                # Python dependencies
-├── config_example.json             # Example configuration
-├── config.json                     # Your configuration (gitignored)
-├── README.md                       # This file
-├── alerts.log                      # Alert history
-├── btc_basis_monitor.log          # Monitor logs
-├── basis_history_YYYYMMDD.json    # Daily history snapshots
-└── btc_basis_analysis_*.txt/json  # Analysis reports
-```
-
 ## Advanced Usage
 
 ### Custom Market Data
 
-Provide manual market data:
-
 ```python
-from btc_basis_trade_analyzer import BasisTradeAnalyzer, MarketData, TradeConfig
+from btc_basis.core.models import MarketData, TradeConfig
+from btc_basis.core.analyzer import BasisTradeAnalyzer
 from datetime import datetime, timedelta
 
 # Create custom market data
@@ -289,27 +304,60 @@ report = analyzer.generate_report(market)
 print(report)
 ```
 
-### Backtesting
-
-Extend the toolkit with historical data:
+### IBKR Integration
 
 ```python
-# TODO: Implement backtester
-# - Load historical spot/futures prices
-# - Simulate entry/exit based on signals
-# - Calculate realized returns and Sharpe ratio
+from btc_basis.data.ibkr import IBKRFetcher
+
+# Connect and fetch data
+fetcher = IBKRFetcher()
+if fetcher.connect():
+    data = fetcher.get_complete_basis_data(expiry="202603")
+    print(f"Spot: ${data['spot_price']:,.2f}")
+    print(f"Futures: ${data['futures_price']:,.2f}")
+    print(f"Basis: {data['basis_percent']:.2f}%")
+    fetcher.disconnect()
 ```
 
-### Integration with IBKR
-
-If using Interactive Brokers:
+### Backtesting with Costs
 
 ```python
-# TODO: Integrate with IBKR Client Portal API
-# - Fetch real-time IBIT/FBTC and CME futures prices
-# - Place orders for both legs simultaneously
-# - Monitor positions and P&L
+from btc_basis.backtest.engine import Backtester
+from btc_basis.backtest.costs import calculate_comprehensive_costs
+from btc_basis.core.models import TradeConfig
+
+config = TradeConfig(account_size=200000)
+backtester = Backtester(config)
+
+# Load data and run backtest
+data = backtester.load_historical_data("data/samples/realistic_basis_2024.csv")
+result = backtester.run_backtest(data, max_holding_days=30)
+
+print(f"Total Return: {result.total_return*100:.2f}%")
+print(f"Win Rate: {result.win_rate*100:.1f}%")
+print(f"Sharpe Ratio: {result.sharpe_ratio:.2f}")
 ```
+
+## Data Sources
+
+| Source | Data | Status |
+|--------|------|--------|
+| Coinbase | BTC spot price | Integrated |
+| Binance | Spot + Perpetual futures | Integrated |
+| IBKR | CME futures + ETF prices | Integrated |
+| Alternative.me | Fear & Greed Index | Integrated |
+
+## Monitoring & Alerts
+
+The monitor script generates alerts for:
+
+- Stop-loss conditions (basis negative or compressed)
+- Full exit signals (peak basis >3.5%)
+- Partial exit signals (elevated basis >2.5%)
+- Entry signals (favorable basis >1.0%)
+- Risk warnings (funding spike, ETF discount, etc.)
+
+Alerts are written to `output/logs/alerts.log`.
 
 ## Disclaimer
 
@@ -328,12 +376,11 @@ MIT License - See LICENSE file for details
 
 Contributions welcome! Areas for improvement:
 
-- [ ] Real-time CME futures data integration
-- [ ] IBKR automated execution
-- [ ] Backtesting engine with historical data
+- [x] Backtesting engine with historical data
+- [x] IBKR integration for real CME data
+- [x] Multi-exchange support (Binance, IBKR)
 - [ ] Web dashboard for monitoring
 - [ ] Email/SMS alert notifications
-- [ ] Multi-exchange support (Deribit, Binance, etc.)
 - [ ] Risk analytics (VaR, CVaR, stress testing)
 - [ ] Portfolio optimization across multiple basis trades
 
@@ -343,5 +390,4 @@ For issues, questions, or feature requests, please open a GitHub issue.
 
 ---
 
-**Built for the Bitcoin Basis Trade Analysis Skill**
-**Compatible with Claude Code CLI**
+**Built for Bitcoin Basis Trade Analysis**
