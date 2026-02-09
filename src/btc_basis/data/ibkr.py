@@ -16,7 +16,7 @@ import csv
 import time
 
 from btc_basis.data.base import BaseFetcher
-from btc_basis.utils.expiry import get_last_friday_of_month
+from btc_basis.utils.expiry import get_last_friday_of_month, get_front_month_expiry_str
 
 
 class IBKRFetcher(BaseFetcher):
@@ -195,13 +195,13 @@ class IBKRFetcher(BaseFetcher):
         return None
 
     def fetch_futures_price(
-        self, expiry: str = "202603", symbol: str = "MBT"
+        self, expiry: str = None, symbol: str = "MBT"
     ) -> Optional[Dict[str, Any]]:
         """
         Fetch CME Bitcoin futures price.
 
         Args:
-            expiry: Contract expiry in YYYYMM format
+            expiry: Contract expiry in YYYYMM format (None = front-month)
             symbol: 'MBT' (Micro 0.1 BTC) or 'BTC' (Standard 5 BTC)
 
         Returns:
@@ -210,6 +210,10 @@ class IBKRFetcher(BaseFetcher):
         if not self.connected:
             if not self.connect():
                 return None
+
+        # Use front-month if no expiry specified
+        if expiry is None:
+            expiry = get_front_month_expiry_str()
 
         from ib_insync import Future
 
@@ -271,7 +275,7 @@ class IBKRFetcher(BaseFetcher):
             return None
 
     def get_complete_basis_data(
-        self, expiry: str = "202603", futures_symbol: str = "MBT"
+        self, expiry: str = None, futures_symbol: str = "MBT"
     ) -> Optional[Dict[str, Any]]:
         """
         Get complete basis data: spot + futures + calculations.
@@ -279,7 +283,7 @@ class IBKRFetcher(BaseFetcher):
         This is the main method for getting all data in one connection.
 
         Args:
-            expiry: Futures expiry (YYYYMM)
+            expiry: Futures expiry (YYYYMM), None = front-month
             futures_symbol: 'MBT' or 'BTC'
 
         Returns:
@@ -288,6 +292,11 @@ class IBKRFetcher(BaseFetcher):
         if not self.connected:
             if not self.connect():
                 return None
+
+        # Use front-month if no expiry specified
+        if expiry is None:
+            expiry = get_front_month_expiry_str()
+            self.log(f"[*] Using front-month contract: {expiry}")
 
         self.log("\n[*] Fetching BTC Spot Price...")
         spot_data = self.get_etf_price()
@@ -440,7 +449,7 @@ class IBKRHistoricalFetcher(IBKRFetcher):
 
     def get_historical_futures(
         self,
-        expiry: str = "202603",
+        expiry: str = None,
         symbol: str = "MBT",
         start_date: datetime = None,
         end_date: datetime = None,
@@ -450,7 +459,7 @@ class IBKRHistoricalFetcher(IBKRFetcher):
         Get historical futures prices.
 
         Args:
-            expiry: Contract expiry (YYYYMM)
+            expiry: Contract expiry (YYYYMM), None = front-month
             symbol: MBT or BTC
             start_date: Start date
             end_date: End date
@@ -462,6 +471,10 @@ class IBKRHistoricalFetcher(IBKRFetcher):
         if not self.connected:
             if not self.connect():
                 return []
+
+        # Use front-month if no expiry specified
+        if expiry is None:
+            expiry = get_front_month_expiry_str()
 
         from ib_insync import Future
 

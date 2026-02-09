@@ -117,3 +117,34 @@ def days_to_expiry(expiry_date: datetime, from_date: datetime = None) -> int:
     """
     reference = from_date or datetime.now()
     return (expiry_date - reference).days
+
+
+def get_front_month_expiry_str(reference_date: datetime = None) -> str:
+    """
+    Get front-month futures expiry in YYYYMM format.
+
+    CME Bitcoin futures expire on the last Friday of each month.
+    If today is before the last Friday of the current month, use current month.
+    Otherwise, roll to next month.
+
+    Args:
+        reference_date: Date to calculate from (default: now)
+
+    Returns:
+        Expiry string in YYYYMM format (e.g., '202603')
+    """
+    today = reference_date or datetime.now()
+
+    # Get last Friday of current month
+    current_month_expiry = get_last_friday_of_month(today.year, today.month)
+
+    # If today is before the expiry, use current month
+    # Otherwise roll to next month
+    if today.date() < current_month_expiry.date():
+        return f"{today.year:04d}{today.month:02d}"
+    else:
+        # Next month
+        if today.month == 12:
+            return f"{today.year + 1:04d}01"
+        else:
+            return f"{today.year:04d}{today.month + 1:02d}"
