@@ -1,0 +1,21 @@
+{
+  "account_size": 200000,
+  "spot_target_pct": 0.50,
+  "futures_target_pct": 0.50,
+  "funding_cost_annual": 0.05,
+  "leverage": 1.0,
+  "cme_contract_size": 5.0,
+  "min_monthly_basis": 0.005,
+  "alert_thresholds": {
+    "stop_loss_basis": 0.002,
+    "partial_exit_basis": 0.025,
+    "full_exit_basis": 0.035,
+    "strong_entry_basis": 0.01,
+    "min_entry_basis": 0.005
+  },
+  "api_keys": {
+    "coinglass": "YOUR_API_KEY_HERE",
+    "ibkr_client_id": "YOUR_CLIENT_ID",
+    "ibkr_account": "YOUR_ACCOUNT"
+  }
+}
