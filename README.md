@@ -38,6 +38,7 @@ pip install -e ".[dev]"
 Run a one-time analysis with current market data:
 
 ```bash
+source .venv/bin/activate
 python main.py analyze
 ```
 
