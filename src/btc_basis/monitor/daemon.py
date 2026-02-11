@@ -40,8 +40,9 @@ class BasisMonitor(LoggingMixin):
         self.last_signal: Optional[Signal] = None
         self.report_writer = ReportWriter()
         self.execution_manager = None
+        self.ibkr_fetcher = None
 
-        # Conditionally init execution manager
+        # Conditionally init execution manager and IBKR data fetcher
         exec_cfg = self.config_loader.execution
         if exec_cfg and exec_cfg.get("enabled"):
             try:
@@ -59,16 +60,76 @@ class BasisMonitor(LoggingMixin):
             except Exception as e:
                 logging.warning(f"Execution manager init failed: {e}")
 
+            # Init IBKR data fetcher for real ETF/futures prices
+            try:
+                from btc_basis.data.ibkr import IBKRFetcher
+
+                ibkr_cfg = self.config_loader.ibkr or {}
+                self.ibkr_fetcher = IBKRFetcher.from_config(ibkr_cfg)
+            except ImportError:
+                logging.warning("ib_insync not installed — IBKR data unavailable")
+            except Exception as e:
+                logging.warning(f"IBKR data fetcher init failed: {e}")
+
         # Setup logging
         setup_logging(log_file="output/logs/btc_basis_monitor.log")
+
+    def _fetch_via_ibkr(self) -> Optional[MarketData]:
+        """Try fetching market data via IBKR for real ETF/futures prices."""
+        if not self.ibkr_fetcher:
+            return None
+
+        try:
+            if not self.ibkr_fetcher.connected:
+                if not self.ibkr_fetcher.connect():
+                    return None
+
+            ibkr_data = self.ibkr_fetcher.get_complete_basis_data()
+            if not ibkr_data:
+                return None
+
+            fear_greed = self.fear_greed.fetch_index()
+
+            from btc_basis.utils.expiry import get_expiry_from_yyyymm
+            expiry_date = get_expiry_from_yyyymm(ibkr_data["expiry"])
+
+            market = MarketData(
+                spot_price=ibkr_data["spot_price"],
+                futures_price=ibkr_data["futures_price"],
+                futures_expiry_date=expiry_date,
+                etf_price=ibkr_data.get("etf_price"),
+                fear_greed_index=fear_greed,
+                cme_open_interest=ibkr_data.get("volume"),
+            )
+
+            self.log(
+                f"IBKR data fetched - Spot: ${market.spot_price:,.2f}, "
+                f"Futures: ${market.futures_price:,.2f}, "
+                f"ETF: ${market.etf_price:.2f}, "
+                f"Monthly Basis: {market.monthly_basis*100:.2f}%"
+            )
+            return market
+
+        except Exception as e:
+            self.log_warning(f"IBKR fetch failed, falling back to Coinbase: {e}")
+            return None
 
     def fetch_market_data(self) -> Optional[MarketData]:
         """
         Fetch current market data.
 
+        Uses IBKR for real ETF/futures prices when available,
+        falls back to Coinbase + estimated futures otherwise.
+
         Returns:
             MarketData or None if fetch failed
         """
+        # Try IBKR first for real prices
+        market = self._fetch_via_ibkr()
+        if market:
+            return market
+
+        # Fallback: Coinbase spot + estimated futures/ETF
         try:
             spot_price = self.coinbase.fetch_spot_price()
             if not spot_price:
@@ -77,8 +138,6 @@ class BasisMonitor(LoggingMixin):
 
             fear_greed = self.fear_greed.fetch_index()
 
-            # For futures, would need CME API or IBKR
-            # For now, use estimated basis (in production, integrate real data)
             futures_price = spot_price * 1.02  # Placeholder: 2% contango
             expiry = datetime.now() + timedelta(days=30)
 
@@ -92,7 +151,7 @@ class BasisMonitor(LoggingMixin):
 
             self.log(
                 f"Market data fetched - Spot: ${spot_price:,.2f}, "
-                f"Monthly Basis: {market.monthly_basis*100:.2f}%"
+                f"Monthly Basis: {market.monthly_basis*100:.2f}% (estimated)"
             )
             return market
 
@@ -272,6 +331,8 @@ Recent History ({len(recent)} samples):
 
         except KeyboardInterrupt:
             self.log("Monitoring stopped by user")
+            if self.ibkr_fetcher and self.ibkr_fetcher.connected:
+                self.ibkr_fetcher.disconnect()
             if self.execution_manager:
                 self.execution_manager.disconnect()
             self.save_history()

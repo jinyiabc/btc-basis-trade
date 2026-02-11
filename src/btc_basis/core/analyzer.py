@@ -175,29 +175,28 @@ class BasisTradeAnalyzer:
         Returns:
             Dictionary with position sizing details
         """
-        spot_amount = self.config.spot_target_amount
         futures_amount = self.config.futures_target_amount
 
-        # ETF shares (if ETF price provided)
-        etf_shares = None
-        if market.etf_price:
-            etf_shares = int(spot_amount / market.etf_price)
-            actual_spot_value = etf_shares * market.etf_price
-        else:
-            actual_spot_value = spot_amount
-
-        # CME futures contracts
+        # 1. Futures leg first (integer rounding determines notional)
         btc_amount = futures_amount / market.spot_price
         contracts_needed = btc_amount / self.config.cme_contract_size
-        contracts = max(1, round(contracts_needed))  # Round to nearest, min 1
+        contracts = max(1, round(contracts_needed))
 
         actual_futures_value = (
             contracts * self.config.cme_contract_size * market.spot_price
         )
 
+        # 2. Spot leg sized to match futures notional
+        etf_shares = None
+        if market.etf_price:
+            etf_shares = int(actual_futures_value / market.etf_price)
+            actual_spot_value = etf_shares * market.etf_price
+        else:
+            actual_spot_value = actual_futures_value
+
         return {
             "etf_shares": etf_shares,
-            "etf_value": actual_spot_value if etf_shares else spot_amount,
+            "etf_value": actual_spot_value,
             "futures_contracts": contracts,
             "futures_btc": contracts * self.config.cme_contract_size,
             "futures_value": actual_futures_value,

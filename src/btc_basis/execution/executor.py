@@ -7,7 +7,7 @@ separate client_id to avoid connection conflicts.
 """
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple
 
 from btc_basis.execution.models import (
@@ -114,6 +114,15 @@ class IBKRExecutor(LoggingMixin):
         self.ib.qualifyContracts(contract)
         return contract
 
+    @staticmethod
+    def _is_overnight_session() -> bool:
+        """Check if current time is in IBKR overnight session (8:00 PM - 3:50 AM ET)."""
+        et = timezone(timedelta(hours=-5))
+        now_et = datetime.now(et)
+        hour, minute = now_et.hour, now_et.minute
+        # 20:00 ET to 03:50 ET next day
+        return hour >= 20 or (hour < 3) or (hour == 3 and minute < 50)
+
     def _create_order(
         self,
         side: OrderSide,
@@ -127,7 +136,13 @@ class IBKRExecutor(LoggingMixin):
         action = "BUY" if side == OrderSide.BUY else "SELL"
 
         if order_type == OrderType.LIMIT and limit_price is not None:
-            return LimitOrder(action, quantity, limit_price)
+            order = LimitOrder(action, quantity, limit_price)
+            if self._is_overnight_session():
+                order.outsideRth = True
+                order.tif = "OVERNIGHT"
+            else:
+                order.outsideRth = True
+            return order
         return MarketOrder(action, quantity)
 
     def _place_and_wait(self, contract, order, timeout: int = 30) -> OrderResult:

@@ -194,6 +194,18 @@ def cmd_monitor(args):
             )
         except Exception as e:
             print(f"[X] Failed to initialize execution: {e}")
+
+        # Init IBKR data fetcher for real ETF/futures prices
+        if not monitor.ibkr_fetcher:
+            try:
+                from btc_basis.data.ibkr import IBKRFetcher
+
+                ibkr_cfg = monitor.config_loader.ibkr or {}
+                monitor.ibkr_fetcher = IBKRFetcher.from_config(ibkr_cfg)
+            except ImportError:
+                print("[X] ib_insync not installed — IBKR data unavailable")
+            except Exception as e:
+                print(f"[X] IBKR data fetcher init failed: {e}")
     elif monitor.execution_manager:
         # Apply overrides to existing execution manager
         if auto_trade:
