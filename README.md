@@ -6,6 +6,8 @@ A comprehensive Python toolkit for analyzing and monitoring cash-and-carry arbit
 
 - **Multi-asset support** - Configure multiple spot+futures pairs (BTC, ETH, Oil, Gold, Silver)
 - **Real-time basis calculation** - Analyzes spot vs futures spread per pair
+- **IBKR Crypto spot** - Fetch BTC.USD and ETH.USD directly from IBKR (PAXOS)
+- **IBKR CMDTY spot** - Fetch XAUUSD and XAGUSD for gold/silver spot prices
 - **Automated signal generation** - Entry, exit, and stop-loss signals
 - **Risk assessment** - Evaluates funding, basis, liquidity, and crowding risks
 - **Position sizing** - Calculates ETF shares and futures contracts per pair allocation
@@ -13,8 +15,7 @@ A comprehensive Python toolkit for analyzing and monitoring cash-and-carry arbit
 - **Per-pair position tracking** - Independent position state for each pair
 - **Backtesting engine** - Test strategy on historical data
 - **Continuous monitoring** - Background daemon with per-pair alerts
-- **IBKR integration** - Real futures data from CME, NYMEX, COMEX and trade execution
-- **Multi-exchange support** - Coinbase, Binance, IBKR data sources
+- **Multi-exchange support** - CME, NYMEX, COMEX futures; Coinbase/Binance fallback for crypto
 - **Data export** - JSON and text report generation
 
 ## Installation
@@ -49,7 +50,6 @@ python main.py analyze
 # Analyze a single pair
 python main.py analyze --pair BTC
 python main.py analyze --pair ETH
-python main.py analyze --pair OIL
 python main.py analyze --pair GOLD
 python main.py analyze --pair SILVER
 ```
@@ -145,7 +145,6 @@ Create `config/config.json` (copy from `config_example.json`):
   "futures_target_pct": 0.50,
   "funding_cost_annual": 0.05,
   "leverage": 1.0,
-  "cme_contract_size": 5.0,
   "min_monthly_basis": 0.005,
   "alert_thresholds": {
     "stop_loss_basis": 0.002,
@@ -156,7 +155,7 @@ Create `config/config.json` (copy from `config_example.json`):
   },
   "ibkr": {
     "host": "127.0.0.1",
-    "port": 7497,
+    "port": 7496,
     "client_id": 1,
     "timeout": 10
   },
@@ -178,6 +177,7 @@ Create `config/config.json` (copy from `config_example.json`):
       "futures_exchange": "CME",
       "contract_size": 0.1,
       "tick_size": 5.0,
+      "crypto_symbol": "BTC",
       "allocation_pct": 0.40
     },
     {
@@ -186,7 +186,8 @@ Create `config/config.json` (copy from `config_example.json`):
       "futures_symbol": "MET",
       "futures_exchange": "CME",
       "contract_size": 0.1,
-      "tick_size": 0.25,
+      "tick_size": 0.50,
+      "crypto_symbol": "ETH",
       "allocation_pct": 0.20
     },
     {
@@ -205,15 +206,18 @@ Create `config/config.json` (copy from `config_example.json`):
       "futures_exchange": "COMEX",
       "contract_size": 10,
       "tick_size": 0.10,
+      "commodity_symbol": "XAUUSD",
       "allocation_pct": 0.15
     },
     {
       "pair_id": "SILVER",
       "spot_symbol": "SLV",
-      "futures_symbol": "SIL",
+      "futures_symbol": "SI",
       "futures_exchange": "COMEX",
       "contract_size": 1000,
       "tick_size": 0.005,
+      "commodity_symbol": "XAGUSD",
+      "futures_multiplier": 1000,
       "allocation_pct": 0.10
     }
   ]
@@ -243,8 +247,16 @@ Each entry in the `pairs` array configures a spot+futures trading pair:
 | `futures_exchange` | `"CME"` | Futures exchange (`CME`, `NYMEX`, `COMEX`) |
 | `contract_size` | `0.1` | Futures contract size in underlying units |
 | `tick_size` | `5.0` | Minimum price increment for limit orders |
+| `crypto_symbol` | `null` | Crypto ticker for IBKR Crypto spot (e.g. `"BTC"`, `"ETH"`) |
+| `commodity_symbol` | `null` | CMDTY ticker for IBKR commodity spot (e.g. `"XAUUSD"`, `"XAGUSD"`) |
+| `futures_multiplier` | `null` | Contract multiplier to disambiguate shared symbols (e.g. `1000` for SI micro silver) |
 | `allocation_pct` | `1.0` | Fraction of `account_size` allocated to this pair |
 | `enabled` | `true` | Whether this pair is active |
+
+**Spot price data source priority**:
+1. **Crypto pairs** (`crypto_symbol` set): IBKR Crypto (e.g. `BTC.USD` via PAXOS) -> Coinbase -> Binance
+2. **Commodity pairs** (`commodity_symbol` set): IBKR CMDTY (e.g. `XAUUSD`) -> ETF price as proxy
+3. **Other pairs**: ETF price as spot proxy (e.g. USO for oil)
 
 **Note**: `allocation_pct` across all pairs should sum to 1.0 for full capital utilization.
 
@@ -263,6 +275,16 @@ Each entry in the `pairs` array configures a spot+futures trading pair:
 | `max_futures_contracts` | `50` | Safety cap on futures contracts per trade |
 | `execution_client_id` | `2` | Separate IBKR client ID (avoids conflicts with data fetcher) |
 
+## Supported Pairs
+
+| Pair | Spot ETF | Futures | Exchange | Contract Size | Spot Source |
+|------|----------|---------|----------|---------------|-------------|
+| BTC | IBIT | MBT (Micro Bitcoin) | CME | 0.1 BTC | IBKR Crypto `BTC.USD` |
+| ETH | ETHA | MET (Micro Ether) | CME | 0.1 ETH | IBKR Crypto `ETH.USD` |
+| OIL | USO | MCL (Micro Crude) | NYMEX | 100 barrels | USO ETF price |
+| GOLD | GLD | MGC (Micro Gold) | COMEX | 10 oz | IBKR CMDTY `XAUUSD` |
+| SILVER | SLV | SI (Silver, 1000oz) | COMEX | 1,000 oz | IBKR CMDTY `XAGUSD` |
+
 ## Trading Signals
 
 The analyzer generates the following signals (shared across all pairs):
@@ -280,37 +302,45 @@ The analyzer generates the following signals (shared across all pairs):
 
 ```
 ============================================================
-  [BTC] IBIT / MBT
-  Allocation: 40% ($80,000)
+  [GOLD] GLD / MGC
+  Allocation: 15% ($30,000)
 ============================================================
+
 ======================================================================
-BITCOIN BASIS TRADE ANALYSIS
+[GOLD] BASIS TRADE ANALYSIS
 ======================================================================
 
 [*] MARKET DATA
 ----------------------------------------------------------------------
-Spot Price:           $95,000.00
-Futures Price:        $97,200.00
-Futures Expiry:       2026-03-08 (30 days)
-ETF Price (IBIT):     $53.50
-Fear & Greed Index:   0.75
+Spot Price:           $2,900.00
+Futures Price:        $2,935.00
+Futures Expiry:       2026-03-27 (30 days)
+ETF Price (GLD):      $267.50
 
 [*] BASIS ANALYSIS
 ----------------------------------------------------------------------
-Basis (Absolute):     $2,200.00
-Basis (Percent):      2.32%
-Monthly Basis:        2.32%
+Basis (Absolute):     $35.00
+Basis (Percent):      1.21%
+Monthly Basis:        1.21%
 
 [*] RETURN CALCULATIONS
 ----------------------------------------------------------------------
-Gross Annualized:     28.18%
+Gross Annualized:     14.68%
 Funding Cost:         5.00% (annualized)
-Net Annualized:       23.18%
+Net Annualized:       9.68%
 
 [*] TRADING SIGNAL
 ----------------------------------------------------------------------
-Signal:  [~] PARTIAL_EXIT
-Reason:  Elevated basis (>2.5% monthly) - partial exit
+Signal:  [+] STRONG_ENTRY
+Reason:  Strong basis >1.0% monthly
+
+[*] POSITION SIZING (Account: $30,000)
+----------------------------------------------------------------------
+ETF Shares (GLD):     56 shares
+ETF Value:            $14,980.00
+Futures Contracts:    2 MGC contract(s)
+Futures Amount:       20.00 oz
+Futures Notional:     $58,000.00
 ```
 
 ## Project Structure
@@ -331,9 +361,9 @@ btc-basis-trade/
 │   │   ├── analyzer.py          # BasisTradeAnalyzer
 │   │   └── calculator.py        # BasisCalculator
 │   ├── data/                    # Data fetchers
-│   │   ├── coinbase.py          # Coinbase spot prices
+│   │   ├── coinbase.py          # Coinbase spot prices (BTC, ETH fallback)
 │   │   ├── binance.py           # Binance spot/futures
-│   │   ├── ibkr.py              # IBKR unified fetcher (CME/NYMEX/COMEX)
+│   │   ├── ibkr.py              # IBKR fetcher (Crypto, CMDTY, futures, ETF)
 │   │   └── historical.py        # Historical data utils
 │   ├── execution/               # Trade execution via IBKR
 │   │   ├── models.py            # ExecutionConfig, OrderRequest, OrderResult
@@ -353,11 +383,6 @@ btc-basis-trade/
 │
 ├── data/
 │   └── samples/                 # Sample CSV files for backtesting
-│
-├── docs/
-│   ├── quickstart.md
-│   ├── architecture.md
-│   └── ibkr/setup.md            # IBKR setup guide
 │
 ├── tests/                       # Test suite
 │   ├── test_analyzer.py
@@ -381,13 +406,25 @@ Net Annualized = Gross Annualized - Funding Cost
 Leveraged Return = Net Annualized x Leverage
 ```
 
-Example:
-- Spot: $95,000
-- Futures (30-day): $97,200
-- Basis: $2,200 (2.32%)
-- Gross Annualized: 2.32% x (365/30) = 28.18%
+Example (Gold):
+- Spot: $2,900
+- Futures (30-day): $2,935
+- Basis: $35 (1.21%)
+- Gross Annualized: 1.21% x (365/30) = 14.68%
 - Funding: 5.00%
-- **Net Annualized: 23.18%**
+- **Net Annualized: 9.68%**
+
+## Data Sources
+
+| Source | Data | Pairs |
+|--------|------|-------|
+| IBKR Crypto | BTC.USD, ETH.USD spot (PAXOS) | BTC, ETH |
+| IBKR CMDTY | XAUUSD, XAGUSD spot | GOLD, SILVER |
+| IBKR Futures | CME, NYMEX, COMEX futures | All |
+| IBKR Stock | ETF prices (IBIT, ETHA, GLD, SLV, USO) | All (position sizing) |
+| Coinbase | Crypto spot fallback | BTC, ETH |
+| Binance | Crypto spot fallback | BTC |
+| Alternative.me | Fear & Greed Index | All |
 
 ## Risk Factors
 
@@ -415,82 +452,6 @@ Over-crowded trades compress basis; CME open interest is a proxy.
 Rollover periods may compress basis; futures settlement logistics.
 
 **Mitigation**: Plan rollovers in advance; monitor basis curve.
-
-## Advanced Usage
-
-### Custom Market Data
-
-```python
-from btc_basis.core.models import MarketData, TradeConfig, PairConfig, make_pair_trade_config
-from btc_basis.core.analyzer import BasisTradeAnalyzer
-from datetime import datetime, timedelta
-
-# Create custom market data
-market = MarketData(
-    spot_price=95000,
-    futures_price=97200,
-    futures_expiry_date=datetime.now() + timedelta(days=30),
-    etf_price=53.50,
-    fear_greed_index=0.75,
-    pair_id="BTC"
-)
-
-# Analyze with pair-specific config
-pair = PairConfig(pair_id="BTC", allocation_pct=0.4, contract_size=0.1)
-global_config = TradeConfig(account_size=200000)
-pair_config = make_pair_trade_config(global_config, pair)
-analyzer = BasisTradeAnalyzer(pair_config)
-report = analyzer.generate_report(market)
-print(report)
-```
-
-### IBKR Integration
-
-```python
-from btc_basis.data.ibkr import IBKRFetcher
-from btc_basis.core.models import PairConfig
-
-# Connect and fetch data for a specific pair
-pair = PairConfig(pair_id="GOLD", spot_symbol="GLD", futures_symbol="MGC",
-                  futures_exchange="COMEX", contract_size=10, tick_size=0.10)
-
-fetcher = IBKRFetcher()
-if fetcher.connect():
-    data = fetcher.get_complete_basis_data(pair=pair)
-    if data:
-        print(f"Spot: ${data['spot_price']:,.2f}")
-        print(f"Futures: ${data['futures_price']:,.2f}")
-        print(f"Basis: {data['basis_percent']:.2f}%")
-    fetcher.disconnect()
-```
-
-### Backtesting with Costs
-
-```python
-from btc_basis.backtest.engine import Backtester
-from btc_basis.backtest.costs import calculate_comprehensive_costs
-from btc_basis.core.models import TradeConfig
-
-config = TradeConfig(account_size=200000)
-backtester = Backtester(config)
-
-# Load data and run backtest
-data = backtester.load_historical_data("data/samples/realistic_basis_2024.csv")
-result = backtester.run_backtest(data, max_holding_days=30)
-
-print(f"Total Return: {result.total_return*100:.2f}%")
-print(f"Win Rate: {result.win_rate*100:.1f}%")
-print(f"Sharpe Ratio: {result.sharpe_ratio:.2f}")
-```
-
-## Data Sources
-
-| Source | Data | Status |
-|--------|------|--------|
-| Coinbase | BTC spot price | Integrated |
-| Binance | Spot + Perpetual futures | Integrated |
-| IBKR | CME/NYMEX/COMEX futures + ETF prices | Integrated |
-| Alternative.me | Fear & Greed Index | Integrated |
 
 ## Monitoring & Alerts
 
@@ -538,6 +499,8 @@ Contributions welcome! Areas for improvement:
 - [x] Trade execution via IBKR with safety layers
 - [x] Multi-asset pair support (BTC, ETH, Oil, Gold, Silver)
 - [x] Per-pair position tracking and execution
+- [x] IBKR Crypto spot (BTC.USD, ETH.USD)
+- [x] IBKR CMDTY spot (XAUUSD, XAGUSD)
 - [ ] Web dashboard for monitoring
 - [ ] Email/SMS alert notifications
 - [ ] Risk analytics (VaR, CVaR, stress testing)
