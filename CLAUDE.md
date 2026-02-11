@@ -34,6 +34,7 @@ btc-basis-trade/
 ├── config_example.json
 ├── data/                            # Sample CSV data files
 ├── output/                          # Generated reports, logs, backtests
+│   └── execution/                   # Execution logs and position state
 ├── tests/
 └── src/btc_basis/                   # Main package
     ├── __init__.py
@@ -47,6 +48,11 @@ btc-basis-trade/
     │   ├── binance.py               # BinanceFetcher
     │   ├── ibkr.py                  # IBKRFetcher, IBKRHistoricalFetcher
     │   └── historical.py            # RollingDataProcessor
+    ├── execution/                   # Trade execution via IBKR
+    │   ├── models.py                # ExecutionConfig, OrderRequest, OrderResult, enums
+    │   ├── position.py              # Position, PositionTracker
+    │   ├── executor.py              # IBKRExecutor (order placement)
+    │   └── manager.py               # ExecutionManager (signal-to-trade bridge)
     ├── backtest/                    # Backtesting engine
     │   ├── engine.py                # Backtester, Trade, BacktestResult
     │   └── costs.py                 # TradingCosts calculations
@@ -81,9 +87,31 @@ btc-basis-trade/
 - **engine.py**: `Backtester` class with `Trade` and `BacktestResult` dataclasses
 - **costs.py**: `TradingCosts` for comprehensive cost calculations
 
+### Execution Module (`src/btc_basis/execution/`)
+
+- **models.py**: Data classes and enums for the execution subsystem
+  - `ExecutionConfig`: Parsed from `config.json["execution"]` — controls `enabled`, `auto_trade`, `dry_run`, symbols, order type, position limits, and `execution_client_id`
+  - `OrderRequest`: Describes a proposed order (side, symbol, quantity, order type, limit price, triggering signal)
+  - `OrderResult`: Result after submission (status, fill price, filled qty, commission, errors)
+  - Enums: `OrderSide` (BUY/SELL), `OrderType` (MARKET/LIMIT), `OrderStatus` (PENDING/SUBMITTED/FILLED/PARTIALLY_FILLED/CANCELLED/FAILED), `TradeAction` (OPEN/CLOSE/REDUCE/NONE)
+- **position.py**: Position persistence
+  - `Position`: Current open position state (ETF shares, futures contracts, entry prices, expiry). Properties: `is_open`, `is_balanced`
+  - `PositionTracker`: Load/save/clear position to `output/execution/position_state.json`. Survives restarts
+- **executor.py**: `IBKRExecutor` — places orders via `ib_insync` using a separate `execution_client_id` (default 2) to avoid connection conflicts with the data fetcher
+  - `connect()` / `disconnect()`: Connect with execution client_id
+  - `execute_order(request)`: Single order entry point; in `dry_run` mode, logs but doesn't submit
+  - `execute_entry_pair(etf_shares, futures_contracts, ...)`: BUY ETF then SELL futures; aborts futures leg if ETF fails
+  - `execute_exit_pair()`: SELL ETF + BUY futures using current position from tracker
+  - `execute_partial_exit(exit_pct=0.5)`: Reduce both legs proportionally
+- **manager.py**: `ExecutionManager` — bridges monitor signals to executor
+  - `handle_signal(signal, reason, market)`: Main entry point called by monitor. Maps signal to `TradeAction`, gets position sizing, runs safety checks, optionally prompts for confirmation, executes, and logs
+  - `_determine_action(signal)`: Signal × position-state → action mapping
+  - `_safety_checks(action, sizing, market)`: Position limits, weekend guard, backwardation guard
+  - All events logged to `output/execution/execution_log.jsonl`
+
 ### Monitor Module (`src/btc_basis/monitor/`)
 
-- **daemon.py**: `BasisMonitor` for continuous monitoring with alert generation
+- **daemon.py**: `BasisMonitor` for continuous monitoring with alert generation. When `execution.enabled` is true in config, conditionally initializes `ExecutionManager` and calls `handle_signal()` when alerts fire
 
 ### Utils Module (`src/btc_basis/utils/`)
 
@@ -104,6 +132,24 @@ DataFetchers → MarketData → Analyzer.generate_signal() → Signal
                               Analyzer.calculate_position_sizing() → Position Dict
                                       ↓
                               ReportWriter → output/*.txt, output/*.json
+```
+
+### Execution Flow (when `execution.enabled` is true)
+
+```
+BasisMonitor.check_and_alert()
+        ↓ (alert triggered)
+ExecutionManager.handle_signal(signal, reason, market)
+        ↓
+    _determine_action(signal) → TradeAction (OPEN/CLOSE/REDUCE/NONE)
+        ↓
+    _safety_checks(action, sizing, market) → pass/reject
+        ↓
+    [if auto_trade=false] _prompt_confirmation() → yes/no
+        ↓
+    IBKRExecutor.execute_entry_pair() / execute_exit_pair() / execute_partial_exit()
+        ↓                                           ↓
+    PositionTracker.save()              execution_log.jsonl (append)
 ```
 
 ### Signal Generation Logic
@@ -142,6 +188,15 @@ python main.py monitor --interval 300
 # Single monitoring check
 python main.py monitor --once
 
+# Monitor with execution (dry-run, manual confirmation)
+python main.py monitor --execute --dry-run --once
+
+# Monitor with execution (dry-run, auto-trade, no prompts)
+python main.py monitor --execute --dry-run --auto-trade --interval 300
+
+# Monitor with live execution (requires IBKR connection)
+python main.py monitor --execute --auto-trade --interval 300
+
 # Backtesting with CSV data
 python main.py backtest --data data/historical_basis.csv --holding-days 30
 
@@ -157,6 +212,9 @@ python main.py backtest --start 2024-01-01 --end 2024-12-31
 | `python main.py cli` | Interactive CLI menu |
 | `python main.py monitor --once` | One-time monitoring check |
 | `python main.py monitor --interval N` | Continuous monitoring every N seconds |
+| `python main.py monitor --execute` | Enable trade execution (uses config or defaults) |
+| `python main.py monitor --dry-run` | Log proposed orders without submitting to IBKR |
+| `python main.py monitor --auto-trade` | Skip manual confirmation prompts |
 | `python main.py backtest --data FILE` | Run backtest on historical CSV data |
 
 ## Configuration
@@ -172,11 +230,54 @@ Configuration is read from `config/config.json` (copy from `config_example.json`
   "leverage": 1.0,
   "cme_contract_size": 5.0,
   "min_monthly_basis": 0.005,
-  "alert_thresholds": { ... }
+  "alert_thresholds": { ... },
+  "ibkr": { ... },
+  "execution": {
+    "enabled": false,
+    "auto_trade": false,
+    "spot_symbol": "IBIT",
+    "futures_symbol": "MBT",
+    "order_type": "limit",
+    "limit_offset_pct": 0.001,
+    "max_etf_shares": 10000,
+    "max_futures_contracts": 50,
+    "execution_client_id": 2,
+    "dry_run": true
+  }
 }
 ```
 
 **Critical**: `spot_target_pct` + `futures_target_pct` should equal 1.0 for balanced delta-neutral exposure.
+
+### Execution Configuration
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Master kill switch — must be `true` (or use `--execute` CLI flag) to activate |
+| `auto_trade` | `false` | When `false`, prompts `Execute? (yes/no)` before each trade |
+| `dry_run` | `true` | When `true`, logs proposed orders without submitting to IBKR |
+| `spot_symbol` | `"IBIT"` | ETF symbol for the spot leg (IBIT, FBTC, GBTC) |
+| `futures_symbol` | `"MBT"` | CME futures symbol (MBT = Micro, BTC = Standard) |
+| `order_type` | `"limit"` | `"limit"` or `"market"` |
+| `limit_offset_pct` | `0.001` | Limit price offset from market (0.1%) — buy above, sell below |
+| `max_etf_shares` | `10000` | Safety cap on ETF shares per trade |
+| `max_futures_contracts` | `50` | Safety cap on futures contracts per trade |
+| `execution_client_id` | `2` | Separate IBKR client ID to avoid conflicts with data fetcher (client_id 1) |
+
+### Execution Safety Layers
+
+| # | Layer | Description |
+|---|-------|-------------|
+| 1 | `enabled: false` | Master kill switch (default off) |
+| 2 | `dry_run: true` | Log orders but don't submit (default on) |
+| 3 | `auto_trade: false` | Require interactive confirmation (default) |
+| 4 | Position limits | `max_etf_shares` / `max_futures_contracts` caps |
+| 5 | Market guards | Weekend check, backwardation guard |
+| 6 | Separate client_id | `execution_client_id: 2` avoids IBKR connection conflicts |
+| 7 | Execution log | Every event logged to `output/execution/execution_log.jsonl` |
+| 8 | Position persistence | `output/execution/position_state.json` survives restarts |
+| 9 | Sequential legs | ETF leg first, futures second; abort if ETF fails |
+| 10 | Fill timeout | Cancel unfilled orders after 30 seconds |
 
 ## Key Formulas (Implementation Reference)
 
@@ -355,6 +456,8 @@ All output files are written to the `output/` directory:
 | `output/alerts.log` | monitor | Trading alerts only (entry/exit/stop signals) |
 | `output/basis_history_*.json` | monitor | Time-series of basis data points |
 | `output/backtest_result_*.json` | backtest | Trade list, metrics (Sharpe, drawdown, win rate) |
+| `output/execution/execution_log.jsonl` | execution | Append-only log of all execution events (proposed/executed/rejected) |
+| `output/execution/position_state.json` | execution | Persisted open position state (survives restarts) |
 
 All JSON files use ISO-8601 timestamps and can be imported to Excel/pandas.
 
@@ -364,14 +467,18 @@ From `requirements.txt`:
 - `requests>=2.31.0`: HTTP client for API calls (Coinbase, Binance, Fear & Greed)
 - `python-dateutil>=2.8.2`: Date parsing utilities
 
+Optional (for IBKR data fetching and trade execution):
+- `ib_insync`: IBKR TWS/Gateway API client. Required only when using `IBKRFetcher`, `IBKRExecutor`, or `execution.enabled`. Lazy-imported so the rest of the toolkit works without it.
+
 Standard library only otherwise (json, dataclasses, enum, datetime, argparse, logging, csv).
 
 ## Financial Domain Notes
 
 **This is educational software, not financial advice.** When modifying:
 - Preserve risk warnings in output
-- Never auto-execute trades without explicit user confirmation
+- Execution is gated behind 10 safety layers (see Execution Safety Layers above). Defaults are: `enabled=false`, `dry_run=true`, `auto_trade=false`
 - Maintain transparency in return calculations (show gross vs net, before/after funding)
 - Log all signal changes for audit trail (see `BasisMonitor.check_and_alert()`)
+- Log all execution events for audit trail (see `output/execution/execution_log.jsonl`)
 
 **Regulatory Context**: Basis trades may have tax implications (short-term capital gains, wash sales). The software does not provide tax guidance.

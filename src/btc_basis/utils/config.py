@@ -35,6 +35,18 @@ class ConfigLoader:
             "client_id": 1,
             "timeout": 10,
         },
+        "execution": {
+            "enabled": False,
+            "auto_trade": False,
+            "spot_symbol": "IBIT",
+            "futures_symbol": "MBT",
+            "order_type": "limit",
+            "limit_offset_pct": 0.001,
+            "max_etf_shares": 10000,
+            "max_futures_contracts": 50,
+            "execution_client_id": 2,
+            "dry_run": True,
+        },
     }
 
     def __init__(self, config_path: Optional[str] = None):
@@ -148,3 +160,8 @@ class ConfigLoader:
     def ibkr(self) -> Dict[str, Any]:
         """Get IBKR connection settings."""
         return self.get("ibkr")
+
+    @property
+    def execution(self) -> Dict[str, Any]:
+        """Get execution settings."""
+        return self.get("execution")

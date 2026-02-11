@@ -109,10 +109,10 @@ class BasisTradeAnalyzer:
                 )
             return Signal.STRONG_ENTRY, "Strong basis >1.0% monthly"
 
-        if monthly_basis > 0.005:  # 0.5%
-            return Signal.ACCEPTABLE_ENTRY, "Acceptable basis 0.5-1.0% monthly"
+        if monthly_basis > self.config.min_monthly_basis:
+            return Signal.ACCEPTABLE_ENTRY, f"Acceptable basis {self.config.min_monthly_basis*100:.1f}-1.0% monthly"
 
-        return Signal.NO_ENTRY, f"Basis too low ({monthly_basis*100:.2f}% monthly)"
+        return Signal.NO_ENTRY, f"Basis too low ({monthly_basis*100:.2f}% monthly, min {self.config.min_monthly_basis*100:.1f}%)"
 
     def assess_risk(self, market: MarketData) -> Dict[str, str]:
         """
@@ -135,7 +135,7 @@ class BasisTradeAnalyzer:
         # Basis risk
         if market.monthly_basis < 0:
             risks["basis"] = "[X] CRITICAL - Backwardation (negative carry)"
-        elif market.monthly_basis < 0.005:
+        elif market.monthly_basis < self.config.min_monthly_basis:
             risks["basis"] = "[!]  HIGH - Basis near zero"
         else:
             risks["basis"] = "[OK] LOW - Positive contango"

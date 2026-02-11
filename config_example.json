@@ -13,9 +13,22 @@
     "strong_entry_basis": 0.01,
     "min_entry_basis": 0.005
   },
-  "api_keys": {
-    "coinglass": "YOUR_API_KEY_HERE",
-    "ibkr_client_id": "YOUR_CLIENT_ID",
-    "ibkr_account": "YOUR_ACCOUNT"
+  "ibkr": {
+    "host": "127.0.0.1",
+    "port": null,
+    "client_id": 1,
+    "timeout": 10
+  },
+  "execution": {
+    "enabled": false,
+    "auto_trade": false,
+    "spot_symbol": "IBIT",
+    "futures_symbol": "MBT",
+    "order_type": "limit",
+    "limit_offset_pct": 0.001,
+    "max_etf_shares": 10000,
+    "max_futures_contracts": 50,
+    "execution_client_id": 2,
+    "dry_run": true
   }
 }

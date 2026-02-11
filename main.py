@@ -166,6 +166,41 @@ def cmd_monitor(args):
     """Run monitoring."""
     monitor = BasisMonitor(config_path=args.config)
 
+    # Apply CLI execution overrides
+    execute = getattr(args, "execute", False)
+    auto_trade = getattr(args, "auto_trade", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    if execute and not monitor.execution_manager:
+        # Enable execution via CLI even if config has enabled=false
+        try:
+            from btc_basis.execution.models import ExecutionConfig
+            from btc_basis.execution.manager import ExecutionManager
+
+            exec_cfg = monitor.config_loader.execution or {}
+            exec_cfg["enabled"] = True
+            if auto_trade:
+                exec_cfg["auto_trade"] = True
+            if dry_run:
+                exec_cfg["dry_run"] = True
+
+            execution_config = ExecutionConfig.from_dict(exec_cfg)
+            ibkr_cfg = monitor.config_loader.ibkr or {}
+            monitor.execution_manager = ExecutionManager(
+                exec_config=execution_config,
+                analyzer=monitor.analyzer,
+                ibkr_host=ibkr_cfg.get("host", "127.0.0.1"),
+                ibkr_port=ibkr_cfg.get("port"),
+            )
+        except Exception as e:
+            print(f"[X] Failed to initialize execution: {e}")
+    elif monitor.execution_manager:
+        # Apply overrides to existing execution manager
+        if auto_trade:
+            monitor.execution_manager.config.auto_trade = True
+        if dry_run:
+            monitor.execution_manager.config.dry_run = True
+
     if args.once:
         monitor.run_once()
     else:
@@ -273,6 +308,19 @@ Examples:
     )
     monitor_parser.add_argument(
         "--once", action="store_true", help="Run once and exit"
+    )
+    monitor_parser.add_argument(
+        "--execute", action="store_true", help="Enable trade execution"
+    )
+    monitor_parser.add_argument(
+        "--auto-trade",
+        action="store_true",
+        help="Auto-execute without confirmation prompts",
+    )
+    monitor_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Log orders but do not submit to IBKR",
     )
 
     # CLI command

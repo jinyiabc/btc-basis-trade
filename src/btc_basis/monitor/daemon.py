@@ -7,6 +7,7 @@ Refactored from btc_basis_monitor.py
 """
 
 import json
+import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -38,6 +39,25 @@ class BasisMonitor(LoggingMixin):
         self.history: List[Dict] = []
         self.last_signal: Optional[Signal] = None
         self.report_writer = ReportWriter()
+        self.execution_manager = None
+
+        # Conditionally init execution manager
+        exec_cfg = self.config_loader.execution
+        if exec_cfg and exec_cfg.get("enabled"):
+            try:
+                from btc_basis.execution.models import ExecutionConfig
+                from btc_basis.execution.manager import ExecutionManager
+
+                execution_config = ExecutionConfig.from_dict(exec_cfg)
+                ibkr_cfg = self.config_loader.ibkr or {}
+                self.execution_manager = ExecutionManager(
+                    exec_config=execution_config,
+                    analyzer=self.analyzer,
+                    ibkr_host=ibkr_cfg.get("host", "127.0.0.1"),
+                    ibkr_port=ibkr_cfg.get("port"),
+                )
+            except Exception as e:
+                logging.warning(f"Execution manager init failed: {e}")
 
         # Setup logging
         setup_logging(log_file="output/logs/btc_basis_monitor.log")
@@ -144,6 +164,13 @@ class BasisMonitor(LoggingMixin):
                 self.log_warning(msg)
                 self.send_alert(msg, alert_data)
 
+            # Trigger execution if manager is available
+            if self.execution_manager:
+                try:
+                    self.execution_manager.handle_signal(signal, reason, market)
+                except Exception as e:
+                    self.log_error(f"Execution failed: {e}")
+
         # Add to history
         self.history.append(alert_data)
         if len(self.history) > 1000:
@@ -245,6 +272,8 @@ Recent History ({len(recent)} samples):
 
         except KeyboardInterrupt:
             self.log("Monitoring stopped by user")
+            if self.execution_manager:
+                self.execution_manager.disconnect()
             self.save_history()
 
     def run_once(self) -> bool:
