@@ -5,6 +5,7 @@ Core data models for BTC Basis Trade analysis.
 Extracted from btc_basis_trade_analyzer.py
 """
 
+from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -72,6 +73,70 @@ class TradeConfig:
 
 
 @dataclass
+class PairConfig:
+    """Configuration for a single spot+futures trading pair."""
+
+    pair_id: str = "BTC"
+    spot_symbol: str = "IBIT"
+    futures_symbol: str = "MBT"
+    futures_exchange: str = "CME"
+    contract_size: float = 0.1
+    tick_size: float = 5.0
+    spot_exchange: str = "SMART"
+    currency: str = "USD"
+    crypto_symbol: Optional[str] = None  # e.g. "BTC", "ETH" — for IBKR Crypto spot
+    commodity_symbol: Optional[str] = None  # e.g. "XAUUSD", "XAGUSD" — for IBKR CMDTY spot
+    futures_multiplier: Optional[int] = None  # e.g. 1000 for SI micro silver (disambiguate from 5000-oz SI)
+    enabled: bool = True
+    allocation_pct: float = 1.0
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PairConfig":
+        """Create PairConfig from dictionary."""
+        return cls(
+            pair_id=data.get("pair_id", "BTC"),
+            spot_symbol=data.get("spot_symbol", "IBIT"),
+            futures_symbol=data.get("futures_symbol", "MBT"),
+            futures_exchange=data.get("futures_exchange", "CME"),
+            contract_size=data.get("contract_size", 0.1),
+            tick_size=data.get("tick_size", 5.0),
+            spot_exchange=data.get("spot_exchange", "SMART"),
+            currency=data.get("currency", "USD"),
+            crypto_symbol=data.get("crypto_symbol"),
+            commodity_symbol=data.get("commodity_symbol"),
+            futures_multiplier=data.get("futures_multiplier"),
+            enabled=data.get("enabled", True),
+            allocation_pct=data.get("allocation_pct", 1.0),
+        )
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "pair_id": self.pair_id,
+            "spot_symbol": self.spot_symbol,
+            "futures_symbol": self.futures_symbol,
+            "futures_exchange": self.futures_exchange,
+            "contract_size": self.contract_size,
+            "tick_size": self.tick_size,
+            "spot_exchange": self.spot_exchange,
+            "currency": self.currency,
+            "crypto_symbol": self.crypto_symbol,
+            "commodity_symbol": self.commodity_symbol,
+            "futures_multiplier": self.futures_multiplier,
+            "enabled": self.enabled,
+            "allocation_pct": self.allocation_pct,
+        }
+
+
+def make_pair_trade_config(global_config: TradeConfig, pair: PairConfig) -> TradeConfig:
+    """Clone global config with account_size scaled by pair's allocation and pair's contract_size."""
+    cfg = copy(global_config)
+    cfg.account_size = global_config.account_size * pair.allocation_pct
+    cfg.cme_contract_size = pair.contract_size
+    return cfg
+
+
+@dataclass
 class MarketData:
     """Market data for basis trade analysis."""
 
@@ -83,6 +148,9 @@ class MarketData:
     fear_greed_index: Optional[float] = None
     cme_open_interest: Optional[float] = None
     as_of_date: Optional[datetime] = None  # For backtesting; defaults to now()
+    pair_id: Optional[str] = None
+    spot_symbol: Optional[str] = None  # ETF symbol (e.g. IBIT, ETHA, GLD)
+    futures_symbol: Optional[str] = None  # Futures symbol (e.g. MBT, MET, MGC)
 
     @property
     def basis_absolute(self) -> float:

@@ -230,9 +230,10 @@ class BasisTradeAnalyzer:
             Signal.HOLD: "[=]",
         }
 
+        pair_label = f"[{market.pair_id}] " if market.pair_id else ""
         report = f"""
 {'='*70}
-BITCOIN BASIS TRADE ANALYSIS
+{pair_label}BASIS TRADE ANALYSIS
 {'='*70}
 
 [*] MARKET DATA
@@ -243,7 +244,8 @@ Futures Expiry:       {market.futures_expiry_date.strftime('%Y-%m-%d')} ({market
 """
 
         if market.etf_price:
-            report += f"ETF Price (IBIT):     ${market.etf_price:.2f}\n"
+            etf_label = market.spot_symbol or "ETF"
+            report += f"ETF Price ({etf_label}):{'  ' if len(etf_label) >= 4 else '   '}  ${market.etf_price:.2f}\n"
         if market.etf_nav:
             report += f"ETF NAV:              ${market.etf_nav:.2f}\n"
         if market.fear_greed_index:
@@ -279,14 +281,21 @@ Reason:  {reason}
 {'-'*70}
 """
 
+        # Unit label for futures amount
+        UNIT_MAP = {"BTC": "BTC", "ETH": "ETH", "OIL": "barrels",
+                    "GOLD": "oz", "SILVER": "oz"}
+        unit = UNIT_MAP.get(market.pair_id, "units")
+        fut_label = market.futures_symbol or "Futures"
+
         if positions["etf_shares"]:
-            report += f"ETF Shares (IBIT):    {positions['etf_shares']:,} shares\n"
+            etf_label = market.spot_symbol or "ETF"
+            report += f"ETF Shares ({etf_label}):{'  ' if len(etf_label) >= 4 else '   '} {positions['etf_shares']:,} shares\n"
             report += f"ETF Value:            ${positions['etf_value']:,.2f}\n"
         else:
-            report += f"Spot BTC Value:       ${positions['etf_value']:,.2f}\n"
+            report += f"Spot Value:           ${positions['etf_value']:,.2f}\n"
 
-        report += f"""CME Futures Contracts: {positions['futures_contracts']} contract(s)
-Futures BTC Amount:   {positions['futures_btc']:.2f} BTC
+        report += f"""Futures Contracts:    {positions['futures_contracts']} {fut_label} contract(s)
+Futures Amount:       {positions['futures_btc']:,.2f} {unit}
 Futures Notional:     ${positions['futures_value']:,.2f}
 Total Exposure:       ${positions['total_exposure']:,.2f}
 Delta Neutral:        {'[OK] Yes' if positions['delta_neutral'] else '[!]  No - rebalance needed'}

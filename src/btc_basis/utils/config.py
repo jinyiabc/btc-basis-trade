@@ -8,7 +8,7 @@ Consolidated from btc_basis_monitor.py and btc_basis_cli.py
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 
 class ConfigLoader:
@@ -47,6 +47,18 @@ class ConfigLoader:
             "execution_client_id": 2,
             "dry_run": True,
         },
+        "pairs": [
+            {
+                "pair_id": "BTC",
+                "spot_symbol": "IBIT",
+                "futures_symbol": "MBT",
+                "futures_exchange": "CME",
+                "contract_size": 0.1,
+                "tick_size": 5.0,
+                "crypto_symbol": "BTC",
+                "allocation_pct": 1.0,
+            }
+        ],
     }
 
     def __init__(self, config_path: Optional[str] = None):
@@ -165,3 +177,35 @@ class ConfigLoader:
     def execution(self) -> Dict[str, Any]:
         """Get execution settings."""
         return self.get("execution")
+
+    def get_pairs(self) -> List:
+        """
+        Get configured trading pairs.
+
+        If 'pairs' key exists in config, parse each entry via PairConfig.from_dict().
+        If absent (legacy config), synthesize a single BTC pair from execution settings.
+
+        Returns:
+            List of PairConfig instances (enabled only)
+        """
+        from btc_basis.core.models import PairConfig
+
+        pairs_raw = self._config.get("pairs")
+        if pairs_raw:
+            pairs = [PairConfig.from_dict(p) for p in pairs_raw]
+            return [p for p in pairs if p.enabled]
+
+        # Legacy fallback: synthesize a single BTC pair from execution + top-level config
+        exec_cfg = self.get("execution") or {}
+        return [
+            PairConfig(
+                pair_id="BTC",
+                spot_symbol=exec_cfg.get("spot_symbol", "IBIT"),
+                futures_symbol=exec_cfg.get("futures_symbol", "MBT"),
+                futures_exchange="CME",
+                contract_size=self.get("cme_contract_size", 0.1),
+                tick_size=5.0,
+                crypto_symbol="BTC",
+                allocation_pct=1.0,
+            )
+        ]

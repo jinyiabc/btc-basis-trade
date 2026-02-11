@@ -22,13 +22,63 @@
   "execution": {
     "enabled": false,
     "auto_trade": false,
-    "spot_symbol": "IBIT",
-    "futures_symbol": "MBT",
     "order_type": "limit",
     "limit_offset_pct": 0.001,
     "max_etf_shares": 10000,
     "max_futures_contracts": 50,
     "execution_client_id": 2,
     "dry_run": true
-  }
+  },
+  "pairs": [
+    {
+      "pair_id": "BTC",
+      "spot_symbol": "IBIT",
+      "futures_symbol": "MBT",
+      "futures_exchange": "CME",
+      "contract_size": 0.1,
+      "tick_size": 5.0,
+      "crypto_symbol": "BTC",
+      "allocation_pct": 0.40
+    },
+    {
+      "pair_id": "ETH",
+      "spot_symbol": "ETHA",
+      "futures_symbol": "MET",
+      "futures_exchange": "CME",
+      "contract_size": 0.1,
+      "tick_size": 0.50,
+      "crypto_symbol": "ETH",
+      "allocation_pct": 0.20
+    },
+    {
+      "pair_id": "OIL",
+      "spot_symbol": "USO",
+      "futures_symbol": "MCL",
+      "futures_exchange": "NYMEX",
+      "contract_size": 100,
+      "tick_size": 0.01,
+      "allocation_pct": 0.15
+    },
+    {
+      "pair_id": "GOLD",
+      "spot_symbol": "GLD",
+      "futures_symbol": "MGC",
+      "futures_exchange": "COMEX",
+      "contract_size": 10,
+      "tick_size": 0.10,
+      "commodity_symbol": "XAUUSD",
+      "allocation_pct": 0.15
+    },
+    {
+      "pair_id": "SILVER",
+      "spot_symbol": "SLV",
+      "futures_symbol": "SI",
+      "futures_exchange": "COMEX",
+      "contract_size": 1000,
+      "tick_size": 0.005,
+      "commodity_symbol": "XAGUSD",
+      "futures_multiplier": 1000,
+      "allocation_pct": 0.10
+    }
+  ]
 }

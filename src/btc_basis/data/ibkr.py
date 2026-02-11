@@ -212,15 +212,149 @@ class IBKRFetcher(BaseFetcher):
 
         return None
 
+    def fetch_raw_etf_price(self, symbol: str, exchange: str = "SMART") -> Optional[float]:
+        """
+        Fetch raw ETF/stock price without BTC multiplier conversion.
+
+        Useful for non-BTC pairs (e.g. GLD, USO, SLV) where ETF_MULTIPLIERS don't apply.
+
+        Args:
+            symbol: ETF/stock symbol
+            exchange: Exchange (default SMART)
+
+        Returns:
+            ETF price or None
+        """
+        if not self.connected:
+            if not self.connect():
+                return None
+
+        from ib_insync import Stock
+
+        try:
+            contract = Stock(symbol, exchange, "USD")
+            self.ib.qualifyContracts(contract)
+
+            ticker = self.ib.reqMktData(contract, "", False, False)
+            self.ib.sleep(2)
+
+            price = ticker.marketPrice()
+            if not price or price <= 0:
+                price = ticker.last
+
+            self.ib.cancelMktData(contract)
+
+            if price and price > 0:
+                self.log(f"[OK] {symbol}: ${price:.2f}")
+                return price
+
+        except Exception as e:
+            self.log(f"[X] {symbol} fetch failed: {e}")
+
+        return None
+
+    def fetch_crypto_spot_price(
+        self, symbol: str = "BTC", currency: str = "USD"
+    ) -> Optional[float]:
+        """
+        Fetch crypto spot price via IBKR Crypto contract (e.g. BTC.USD, ETH.USD).
+
+        Args:
+            symbol: Crypto symbol (BTC, ETH, etc.)
+            currency: Quote currency (default USD)
+
+        Returns:
+            Spot price or None
+        """
+        if not self.connected:
+            if not self.connect():
+                return None
+
+        from ib_insync import Crypto
+
+        try:
+            contract = Crypto(symbol, "PAXOS", currency)
+            self.ib.qualifyContracts(contract)
+
+            ticker = self.ib.reqMktData(contract, "", False, False)
+            self.ib.sleep(2)
+
+            price = ticker.marketPrice()
+            if not price or price <= 0:
+                price = ticker.last
+            if not price or price <= 0:
+                price = ticker.close
+
+            self.ib.cancelMktData(contract)
+
+            if price and price > 0:
+                self.log(f"[OK] {symbol}.{currency}: ${price:,.2f}")
+                return price
+
+            self.log(f"[X] {symbol}.{currency}: no valid price")
+            return None
+
+        except Exception as e:
+            self.log(f"[X] {symbol}.{currency} fetch failed: {e}")
+            return None
+
+    def fetch_commodity_spot_price(
+        self, symbol: str = "XAUUSD", currency: str = "USD"
+    ) -> Optional[float]:
+        """
+        Fetch commodity spot price via IBKR CMDTY contract (e.g. XAUUSD, XAGUSD).
+
+        Args:
+            symbol: Commodity symbol (XAUUSD for gold, XAGUSD for silver)
+            currency: Quote currency (default USD)
+
+        Returns:
+            Spot price or None
+        """
+        if not self.connected:
+            if not self.connect():
+                return None
+
+        from ib_insync import Contract
+
+        try:
+            contract = Contract(secType="CMDTY", symbol=symbol, exchange="SMART", currency=currency)
+            self.ib.qualifyContracts(contract)
+
+            ticker = self.ib.reqMktData(contract, "", False, False)
+            self.ib.sleep(2)
+
+            price = ticker.marketPrice()
+            if not price or price <= 0:
+                price = ticker.last
+            if not price or price <= 0:
+                price = ticker.close
+
+            self.ib.cancelMktData(contract)
+
+            if price and price > 0:
+                self.log(f"[OK] {symbol}: ${price:,.2f}")
+                return price
+
+            self.log(f"[X] {symbol}: no valid price")
+            return None
+
+        except Exception as e:
+            self.log(f"[X] {symbol} fetch failed: {e}")
+            return None
+
     def fetch_futures_price(
-        self, expiry: str = None, symbol: str = "MBT"
+        self, expiry: str = None, symbol: str = "MBT", exchange: str = "CME",
+        multiplier: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Fetch CME Bitcoin futures price.
+        Fetch futures price.
 
         Args:
             expiry: Contract expiry in YYYYMM format (None = front-month)
-            symbol: 'MBT' (Micro 0.1 BTC) or 'BTC' (Standard 5 BTC)
+            symbol: Futures symbol (e.g. 'MBT', 'MET', 'MCL', 'MGC', 'SI')
+            exchange: Exchange (e.g. 'CME', 'NYMEX', 'COMEX')
+            multiplier: Contract multiplier (e.g. 1000 for SI micro silver)
 
         Returns:
             Dictionary with futures data or None
@@ -236,7 +370,11 @@ class IBKRFetcher(BaseFetcher):
         from ib_insync import Future
 
         try:
-            btc_future = Future(symbol, expiry, "CME")
+            if multiplier:
+                btc_future = Future(symbol=symbol, lastTradeDateOrContractMonth=expiry,
+                                    exchange=exchange, multiplier=str(multiplier))
+            else:
+                btc_future = Future(symbol, expiry, exchange)
             self.log(f"Looking for {symbol} futures expiring {expiry}...")
 
             self.ib.qualifyContracts(btc_future)
@@ -274,7 +412,7 @@ class IBKRFetcher(BaseFetcher):
 
                 return {
                     "symbol": symbol,
-                    "exchange": "CME",
+                    "exchange": exchange,
                     "expiry": expiry,
                     "local_symbol": btc_future.localSymbol,
                     "futures_price": futures_price,
@@ -292,9 +430,12 @@ class IBKRFetcher(BaseFetcher):
             self.log(f"[X] Failed to get futures: {e}")
             return None
 
-    def _fetch_actual_spot_price(self) -> Optional[Dict[str, Any]]:
+    def _fetch_actual_spot_price(self, currency: str = "BTC") -> Optional[Dict[str, Any]]:
         """
-        Fetch actual BTC spot price from Coinbase or Binance.
+        Fetch actual crypto spot price from Coinbase or Binance.
+
+        Args:
+            currency: Crypto symbol (BTC, ETH, etc.)
 
         Returns:
             Dictionary with spot_price and source, or None if all sources fail
@@ -303,39 +444,42 @@ class IBKRFetcher(BaseFetcher):
         try:
             from btc_basis.data.coinbase import CoinbaseFetcher
             coinbase = CoinbaseFetcher()
-            spot = coinbase.fetch_spot_price()
+            spot = coinbase.fetch_spot_price(currency=currency)
             if spot and spot > 0:
-                self.log(f"[OK] Coinbase spot: ${spot:,.2f}")
-                return {"spot_price": spot, "source": "Coinbase"}
+                self.log(f"[OK] Coinbase {currency} spot: ${spot:,.2f}")
+                return {"spot_price": spot, "source": f"Coinbase ({currency})"}
         except Exception as e:
             self.log(f"[X] Coinbase failed: {e}")
 
-        # Try Binance as fallback
-        try:
-            from btc_basis.data.binance import BinanceFetcher
-            binance = BinanceFetcher()
-            spot = binance.fetch_spot_price()
-            if spot and spot > 0:
-                self.log(f"[OK] Binance spot: ${spot:,.2f}")
-                return {"spot_price": spot, "source": "Binance"}
-        except Exception as e:
-            self.log(f"[X] Binance failed: {e}")
+        # Try Binance as fallback (BTC only)
+        if currency == "BTC":
+            try:
+                from btc_basis.data.binance import BinanceFetcher
+                binance = BinanceFetcher()
+                spot = binance.fetch_spot_price()
+                if spot and spot > 0:
+                    self.log(f"[OK] Binance spot: ${spot:,.2f}")
+                    return {"spot_price": spot, "source": "Binance"}
+            except Exception as e:
+                self.log(f"[X] Binance failed: {e}")
 
         return None
 
     def get_complete_basis_data(
-        self, expiry: str = None, futures_symbol: str = "MBT"
+        self, expiry: str = None, futures_symbol: str = "MBT", pair=None
     ) -> Optional[Dict[str, Any]]:
         """
         Get complete basis data: spot + futures + calculations.
 
         This is the main method for getting all data in one connection.
-        Spot price is fetched from Coinbase/Binance for accuracy.
-        ETF price is fetched from IBKR for position sizing.
+        When pair is provided, uses pair-specific symbols and exchange.
+        For BTC pairs, spot price is fetched from Coinbase/Binance for accuracy.
+        For non-BTC pairs, spot price is fetched via ETF from IBKR.
 
         Args:
             expiry: Futures expiry (YYYYMM), None = front-month
-            futures_symbol: 'MBT' or 'BTC'
+            futures_symbol: Futures symbol (used when pair is None)
+            pair: Optional PairConfig for multi-pair support
 
         Returns:
             Complete basis trade data dictionary
@@ -344,40 +488,87 @@ class IBKRFetcher(BaseFetcher):
             if not self.connect():
                 return None
 
+        # Resolve pair-specific settings
+        if pair is not None:
+            futures_symbol = pair.futures_symbol
+            futures_exchange = pair.futures_exchange
+            futures_multiplier = pair.futures_multiplier
+            spot_symbol = pair.spot_symbol
+            pair_id = pair.pair_id
+        else:
+            futures_exchange = "CME"
+            futures_multiplier = None
+            spot_symbol = "IBIT"
+            pair_id = "BTC"
+
         # Use front-month if no expiry specified
         if expiry is None:
             expiry = get_front_month_expiry_str()
-            self.log(f"[*] Using front-month contract: {expiry}")
+            self.log(f"[*] [{pair_id}] Using front-month contract: {expiry}")
 
-        # Fetch actual BTC spot price from Coinbase/Binance
-        self.log("\n[*] Fetching BTC Spot Price...")
-        actual_spot = self._fetch_actual_spot_price()
+        # Fetch spot price — strategy depends on pair type
+        crypto_symbol = pair.crypto_symbol if pair is not None else "BTC"
+        commodity_symbol = pair.commodity_symbol if pair is not None else None
+        spot_price = None
+        spot_source = None
+        etf_price = None
 
-        # Also fetch ETF price for position sizing
-        self.log("[*] Fetching ETF price for position sizing...")
-        etf_data = self.get_etf_price()
+        if crypto_symbol:
+            # Crypto pair: use IBKR Crypto spot (e.g. BTC.USD, ETH.USD)
+            self.log(f"\n[*] [{pair_id}] Fetching {crypto_symbol}.USD spot via IBKR Crypto...")
+            spot_price = self.fetch_crypto_spot_price(crypto_symbol, "USD")
+            if spot_price:
+                spot_source = f"IBKR Crypto ({crypto_symbol}.USD)"
+            else:
+                # Fallback to Coinbase/Binance
+                self.log(f"[!] [{pair_id}] IBKR Crypto failed, trying Coinbase/Binance...")
+                actual_spot = self._fetch_actual_spot_price(crypto_symbol)
+                if actual_spot:
+                    spot_price = actual_spot["spot_price"]
+                    spot_source = actual_spot["source"]
 
-        # Determine spot price and source
-        if actual_spot:
-            spot_price = actual_spot["spot_price"]
-            spot_source = actual_spot["source"]
-        elif etf_data:
-            # Fall back to ETF proxy
-            spot_price = etf_data["btc_price"]
-            spot_source = f"{etf_data['source']} (ETF proxy)"
-            self.log(f"[!] Using ETF proxy for spot: ${spot_price:,.2f}")
+            # Also fetch ETF price for position sizing
+            self.log(f"[*] [{pair_id}] Fetching ETF {spot_symbol} for position sizing...")
+            if pair_id == "BTC":
+                etf_data = self.get_etf_price(spot_symbol)
+                etf_price = etf_data["etf_price"] if etf_data else None
+            else:
+                etf_price = self.fetch_raw_etf_price(spot_symbol)
+        elif commodity_symbol:
+            # Commodity pair: use IBKR CMDTY spot (e.g. XAUUSD, XAGUSD)
+            self.log(f"\n[*] [{pair_id}] Fetching {commodity_symbol} spot via IBKR CMDTY...")
+            spot_price = self.fetch_commodity_spot_price(commodity_symbol, "USD")
+            if spot_price:
+                spot_source = f"IBKR CMDTY ({commodity_symbol})"
+            else:
+                # Fallback to ETF as spot proxy
+                self.log(f"[!] [{pair_id}] IBKR CMDTY failed, falling back to ETF {spot_symbol}...")
+                raw_price = self.fetch_raw_etf_price(spot_symbol)
+                if raw_price:
+                    spot_price = raw_price
+                    spot_source = f"{spot_symbol} (ETF proxy)"
+
+            # Also fetch ETF price for position sizing
+            self.log(f"[*] [{pair_id}] Fetching ETF {spot_symbol} for position sizing...")
+            etf_price = self.fetch_raw_etf_price(spot_symbol)
         else:
-            self.log("[X] Could not get spot price from any source")
+            # Other: fetch ETF price as the spot proxy
+            self.log(f"\n[*] [{pair_id}] Fetching spot via ETF {spot_symbol}...")
+            raw_price = self.fetch_raw_etf_price(spot_symbol)
+            if raw_price:
+                spot_price = raw_price
+                etf_price = raw_price
+                spot_source = f"{spot_symbol} (ETF)"
+
+        if not spot_price:
+            self.log(f"[X] [{pair_id}] Could not get spot price from any source")
             return None
 
-        # Get ETF price (for position sizing), default if not available
-        etf_price = etf_data["etf_price"] if etf_data else None
-
-        self.log("\n[*] Fetching BTC Futures Price...")
-        futures_data = self.fetch_futures_price(expiry, futures_symbol)
+        self.log(f"\n[*] [{pair_id}] Fetching Futures Price...")
+        futures_data = self.fetch_futures_price(expiry, futures_symbol, futures_exchange, futures_multiplier)
 
         if not futures_data:
-            self.log("[X] Could not get futures data")
+            self.log(f"[X] [{pair_id}] Could not get futures data")
             return None
 
         futures_price = futures_data["futures_price"]
@@ -393,7 +584,7 @@ class IBKRFetcher(BaseFetcher):
         monthly_basis = basis_percent * (30 / days_to_expiry) if days_to_expiry > 0 else 0
         annualized_basis = basis_percent * (365 / days_to_expiry) if days_to_expiry > 0 else 0
 
-        self.log(f"\n[*] Basis Calculation:")
+        self.log(f"\n[*] [{pair_id}] Basis Calculation:")
         self.log(f"    Spot:        ${spot_price:,.2f} (from {spot_source})")
         self.log(f"    Futures:     ${futures_price:,.2f}")
         self.log(f"    Basis:       ${basis_absolute:,.2f} ({basis_percent:.2f}%)")
@@ -421,8 +612,9 @@ class IBKRFetcher(BaseFetcher):
             "monthly_basis": monthly_basis,
             "annualized_basis": annualized_basis,
             # Metadata
+            "pair_id": pair_id,
             "timestamp": datetime.now(),
-            "data_source": "IBKR + Coinbase/Binance",
+            "data_source": spot_source or "IBKR",
         }
 
 
@@ -517,6 +709,7 @@ class IBKRHistoricalFetcher(IBKRFetcher):
         self,
         expiry: str = None,
         symbol: str = "MBT",
+        exchange: str = "CME",
         start_date: datetime = None,
         end_date: datetime = None,
         bar_size: str = "1 day",
@@ -526,7 +719,8 @@ class IBKRHistoricalFetcher(IBKRFetcher):
 
         Args:
             expiry: Contract expiry (YYYYMM), None = front-month
-            symbol: MBT or BTC
+            symbol: Futures symbol (e.g. MBT, MCL, MGC)
+            exchange: Exchange (e.g. CME, NYMEX, COMEX)
             start_date: Start date
             end_date: End date
             bar_size: Bar size
@@ -545,7 +739,7 @@ class IBKRHistoricalFetcher(IBKRFetcher):
         from ib_insync import Future
 
         try:
-            future = Future(symbol, expiry, "CME")
+            future = Future(symbol, expiry, exchange)
             self.ib.qualifyContracts(future)
 
             self.log(f"Fetching historical futures: {future.localSymbol}...")

@@ -99,6 +99,8 @@ class OrderRequest:
     limit_price: Optional[float] = None
     signal: Optional[str] = None
     reason: Optional[str] = None
+    contract_type: str = "stock"  # "stock" or "futures"
+    futures_exchange: str = "CME"  # Exchange for futures contracts
     timestamp: datetime = field(default_factory=datetime.now)
 
     def describe(self) -> str:

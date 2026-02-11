@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Bitcoin Basis Trade Analysis Toolkit - A Python toolkit for analyzing and monitoring cash-and-carry arbitrage (basis trade) opportunities between Bitcoin spot and futures markets. This is a market-neutral strategy that captures the spread (basis) between spot prices and futures prices.
+Multi-Asset Basis Trade Analysis Toolkit - A Python toolkit for analyzing and monitoring cash-and-carry arbitrage (basis trade) opportunities between spot ETFs and futures markets. Supports multiple asset classes (BTC, ETH, Oil, Gold, Silver) each with their own spot+futures pair. This is a market-neutral strategy that captures the spread (basis) between spot prices and futures prices.
 
 ## Core Concepts
 
 **Basis Trade Strategy**:
-- Long spot BTC (via ETF like IBIT/FBTC)
-- Short equivalent BTC futures (CME)
+- Long spot (via ETF like IBIT, ETHA, GLD, USO, SLV)
+- Short equivalent futures (CME, NYMEX, COMEX)
 - Delta-neutral position that profits from basis convergence
 - Return = (Futures Price - Spot Price) / Spot Price × (365 / Days) - Funding Cost
 
@@ -70,7 +70,9 @@ btc-basis-trade/
 - **models.py**: Data classes
   - `Signal` enum: Trading signals (STRONG_ENTRY, ACCEPTABLE_ENTRY, PARTIAL_EXIT, FULL_EXIT, STOP_LOSS)
   - `TradeConfig`: Configuration parameters (account size, leverage, funding cost, thresholds)
-  - `MarketData`: Encapsulates spot price, futures price, expiry date, and calculated basis metrics
+  - `PairConfig`: Per-pair configuration (pair_id, spot_symbol, futures_symbol, futures_exchange, contract_size, tick_size, allocation_pct)
+  - `make_pair_trade_config(global_config, pair)`: Clones global TradeConfig with account_size scaled by pair's allocation and pair's contract_size
+  - `MarketData`: Encapsulates spot price, futures price, expiry date, calculated basis metrics, and optional `pair_id`
 - **analyzer.py**: `BasisTradeAnalyzer` - core analysis engine with methods for returns calculation, signal generation, risk assessment, and position sizing
 - **calculator.py**: `BasisCalculator` - centralized basis math used across modules
 
@@ -79,7 +81,7 @@ btc-basis-trade/
 - **base.py**: `BaseFetcher` abstract base class defining the interface for all data sources
 - **coinbase.py**: `CoinbaseFetcher` (BTC spot), `FearGreedFetcher` (sentiment)
 - **binance.py**: `BinanceFetcher` for Binance spot/futures
-- **ibkr.py**: Unified `IBKRFetcher` and `IBKRHistoricalFetcher` for Interactive Brokers
+- **ibkr.py**: Unified `IBKRFetcher` and `IBKRHistoricalFetcher` for Interactive Brokers. Pair-aware: `get_complete_basis_data(pair=PairConfig)` routes to correct exchange. `fetch_raw_etf_price()` for non-BTC ETFs. `fetch_futures_price(exchange=)` supports CME/NYMEX/COMEX
 - **historical.py**: `RollingDataProcessor` for historical data handling
 
 ### Backtest Module (`src/btc_basis/backtest/`)
@@ -91,31 +93,39 @@ btc-basis-trade/
 
 - **models.py**: Data classes and enums for the execution subsystem
   - `ExecutionConfig`: Parsed from `config.json["execution"]` — controls `enabled`, `auto_trade`, `dry_run`, symbols, order type, position limits, and `execution_client_id`
-  - `OrderRequest`: Describes a proposed order (side, symbol, quantity, order type, limit price, triggering signal)
+  - `OrderRequest`: Describes a proposed order (side, symbol, quantity, order type, limit price, triggering signal, `contract_type` "stock"/"futures", `futures_exchange`)
   - `OrderResult`: Result after submission (status, fill price, filled qty, commission, errors)
   - Enums: `OrderSide` (BUY/SELL), `OrderType` (MARKET/LIMIT), `OrderStatus` (PENDING/SUBMITTED/FILLED/PARTIALLY_FILLED/CANCELLED/FAILED), `TradeAction` (OPEN/CLOSE/REDUCE/NONE)
 - **position.py**: Position persistence
-  - `Position`: Current open position state (ETF shares, futures contracts, entry prices, expiry). Properties: `is_open`, `is_balanced`
-  - `PositionTracker`: Load/save/clear position to `output/execution/position_state.json`. Survives restarts
+  - `Position`: Current open position state (`pair_id`, ETF shares, futures contracts, entry prices, expiry). Properties: `is_open`, `is_balanced`
+  - `PositionTracker`: Per-pair file persistence to `output/execution/position_state_{pair_id}.json`. Accepts `pair_id` parameter. Survives restarts
 - **executor.py**: `IBKRExecutor` — places orders via `ib_insync` using a separate `execution_client_id` (default 2) to avoid connection conflicts with the data fetcher
   - `connect()` / `disconnect()`: Connect with execution client_id
   - `execute_order(request)`: Single order entry point; in `dry_run` mode, logs but doesn't submit
-  - `execute_entry_pair(etf_shares, futures_contracts, ...)`: BUY ETF then SELL futures; aborts futures leg if ETF fails
-  - `execute_exit_pair()`: SELL ETF + BUY futures using current position from tracker
-  - `execute_partial_exit(exit_pct=0.5)`: Reduce both legs proportionally
+  - `execute_entry_pair(etf_shares, futures_contracts, ..., pair=PairConfig)`: BUY ETF then SELL futures; uses pair-specific symbols/exchange/tick_size; aborts futures leg if ETF fails
+  - `execute_exit_pair(pair=PairConfig)`: SELL ETF + BUY futures using current position from tracker
+  - `execute_partial_exit(exit_pct=0.5, pair=PairConfig)`: Reduce both legs proportionally
 - **manager.py**: `ExecutionManager` — bridges monitor signals to executor
+  - Constructor accepts optional `pair: PairConfig` for per-pair position tracking and logging
   - `handle_signal(signal, reason, market)`: Main entry point called by monitor. Maps signal to `TradeAction`, gets position sizing, runs safety checks, optionally prompts for confirmation, executes, and logs
   - `_determine_action(signal)`: Signal × position-state → action mapping
   - `_safety_checks(action, sizing, market)`: Position limits, weekend guard, backwardation guard
-  - All events logged to `output/execution/execution_log.jsonl`
+  - All events logged to `output/execution/execution_log.jsonl` with `pair_id`
 
 ### Monitor Module (`src/btc_basis/monitor/`)
 
-- **daemon.py**: `BasisMonitor` for continuous monitoring with alert generation. When `execution.enabled` is true in config, conditionally initializes `ExecutionManager` and calls `handle_signal()` when alerts fire
+- **daemon.py**: Multi-pair monitor with `PairContext` dataclass and `BasisMonitor`
+  - `PairContext`: Per-pair runtime state (pair config, trade config, analyzer, execution manager, signal history)
+  - `BasisMonitor.__init__()`: Loads pairs via `ConfigLoader.get_pairs()`, creates per-pair `PairContext` with scaled `TradeConfig` and optional `ExecutionManager`
+  - `fetch_market_data(pair)`: IBKR path calls `get_complete_basis_data(pair=pair)`; Coinbase fallback only for BTC
+  - `check_and_alert(ctx, market)`: Per-pair signal generation and execution; alert messages prefixed with `[PAIR_ID]`
+  - `run_continuous(pair_filter=)` / `run_once(pair_filter=)`: Iterates over all (or filtered) pairs
+  - `generate_summary_report()`: Combined summary showing all pairs
 
 ### Utils Module (`src/btc_basis/utils/`)
 
-- **config.py**: `ConfigLoader` with default config management
+- **config.py**: `ConfigLoader` with default config management and `get_pairs()` method
+  - `get_pairs() -> List[PairConfig]`: Parses `pairs` array from config. If absent (legacy), synthesizes single BTC pair from `execution.spot_symbol`, `execution.futures_symbol`, `cme_contract_size`
 - **logging.py**: `LoggingMixin` for consistent logging across modules
 - **expiry.py**: `get_last_friday_of_month`, `get_front_month_expiry`, `generate_expiry_schedule`
 - **io.py**: `ReportWriter` for text and JSON output generation
@@ -123,9 +133,13 @@ btc-basis-trade/
 ### Data Flow
 
 ```
-ConfigLoader → TradeConfig → BasisTradeAnalyzer
+ConfigLoader → get_pairs() → List[PairConfig]
                                       ↓
-DataFetchers → MarketData → Analyzer.generate_signal() → Signal
+                For each pair:
+                  make_pair_trade_config(global, pair) → pair TradeConfig
+                  pair TradeConfig → BasisTradeAnalyzer
+                                      ↓
+                  DataFetchers(pair) → MarketData(pair_id=...) → Analyzer.generate_signal() → Signal
                                       ↓
                               Analyzer.assess_risk() → Risk Dict
                                       ↓
@@ -137,9 +151,13 @@ DataFetchers → MarketData → Analyzer.generate_signal() → Signal
 ### Execution Flow (when `execution.enabled` is true)
 
 ```
-BasisMonitor.check_and_alert()
+BasisMonitor.run_continuous() / run_once()
+        ↓ (for each pair)
+    fetch_market_data(ctx.pair) → MarketData
+        ↓
+    check_and_alert(ctx, market)
         ↓ (alert triggered)
-ExecutionManager.handle_signal(signal, reason, market)
+    ctx.ExecutionManager.handle_signal(signal, reason, market)
         ↓
     _determine_action(signal) → TradeAction (OPEN/CLOSE/REDUCE/NONE)
         ↓
@@ -147,9 +165,9 @@ ExecutionManager.handle_signal(signal, reason, market)
         ↓
     [if auto_trade=false] _prompt_confirmation() → yes/no
         ↓
-    IBKRExecutor.execute_entry_pair() / execute_exit_pair() / execute_partial_exit()
+    IBKRExecutor.execute_entry_pair(pair=self.pair) / execute_exit_pair(pair=) / execute_partial_exit(pair=)
         ↓                                           ↓
-    PositionTracker.save()              execution_log.jsonl (append)
+    PositionTracker(pair_id).save()     execution_log.jsonl (append, with pair_id)
 ```
 
 ### Signal Generation Logic
@@ -176,14 +194,20 @@ pip install -e .
 ### Unified CLI (Recommended)
 
 ```bash
-# Single analysis
+# Analyze all configured pairs
 python main.py analyze
+
+# Analyze single pair
+python main.py analyze --pair BTC
 
 # Interactive menu
 python main.py cli
 
-# Continuous monitoring (every 5 minutes)
+# Continuous monitoring (every 5 minutes, all pairs)
 python main.py monitor --interval 300
+
+# Monitor single pair
+python main.py monitor --pair ETH --once
 
 # Single monitoring check
 python main.py monitor --once
@@ -208,9 +232,11 @@ python main.py backtest --start 2024-01-01 --end 2024-12-31
 
 | Command | Description |
 |---------|-------------|
-| `python main.py analyze` | Single-run analysis with current market data |
+| `python main.py analyze` | Analyze all configured pairs |
+| `python main.py analyze --pair BTC` | Analyze single pair |
 | `python main.py cli` | Interactive CLI menu |
-| `python main.py monitor --once` | One-time monitoring check |
+| `python main.py monitor --once` | One-time monitoring check (all pairs) |
+| `python main.py monitor --pair ETH --once` | One-time check for single pair |
 | `python main.py monitor --interval N` | Continuous monitoring every N seconds |
 | `python main.py monitor --execute` | Enable trade execution (uses config or defaults) |
 | `python main.py monitor --dry-run` | Log proposed orders without submitting to IBKR |
@@ -235,19 +261,56 @@ Configuration is read from `config/config.json` (copy from `config_example.json`
   "execution": {
     "enabled": false,
     "auto_trade": false,
-    "spot_symbol": "IBIT",
-    "futures_symbol": "MBT",
     "order_type": "limit",
     "limit_offset_pct": 0.001,
     "max_etf_shares": 10000,
     "max_futures_contracts": 50,
     "execution_client_id": 2,
     "dry_run": true
-  }
+  },
+  "pairs": [
+    {
+      "pair_id": "BTC",
+      "spot_symbol": "IBIT",
+      "futures_symbol": "MBT",
+      "futures_exchange": "CME",
+      "contract_size": 0.1,
+      "tick_size": 5.0,
+      "allocation_pct": 0.40
+    },
+    {
+      "pair_id": "ETH",
+      "spot_symbol": "ETHA",
+      "futures_symbol": "MET",
+      "futures_exchange": "CME",
+      "contract_size": 0.1,
+      "tick_size": 0.25,
+      "allocation_pct": 0.20
+    }
+  ]
 }
 ```
 
 **Critical**: `spot_target_pct` + `futures_target_pct` should equal 1.0 for balanced delta-neutral exposure.
+
+**Critical**: `allocation_pct` across all pairs should sum to 1.0 for full capital utilization.
+
+### Pair Configuration
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `pair_id` | `"BTC"` | Unique identifier for the pair |
+| `spot_symbol` | `"IBIT"` | ETF symbol for the spot leg |
+| `futures_symbol` | `"MBT"` | Futures symbol |
+| `futures_exchange` | `"CME"` | Exchange for futures (`CME`, `NYMEX`, `COMEX`) |
+| `contract_size` | `0.1` | Futures contract size in underlying units |
+| `tick_size` | `5.0` | Minimum price increment for limit orders |
+| `spot_exchange` | `"SMART"` | Exchange for spot ETF orders |
+| `currency` | `"USD"` | Currency |
+| `enabled` | `true` | Whether this pair is active |
+| `allocation_pct` | `1.0` | Fraction of `account_size` allocated to this pair |
+
+When `pairs` is absent from config (legacy), a single BTC pair is synthesized from `execution.spot_symbol`, `execution.futures_symbol`, and `cme_contract_size`.
 
 ### Execution Configuration
 
@@ -256,8 +319,6 @@ Configuration is read from `config/config.json` (copy from `config_example.json`
 | `enabled` | `false` | Master kill switch — must be `true` (or use `--execute` CLI flag) to activate |
 | `auto_trade` | `false` | When `false`, prompts `Execute? (yes/no)` before each trade |
 | `dry_run` | `true` | When `true`, logs proposed orders without submitting to IBKR |
-| `spot_symbol` | `"IBIT"` | ETF symbol for the spot leg (IBIT, FBTC, GBTC) |
-| `futures_symbol` | `"MBT"` | CME futures symbol (MBT = Micro, BTC = Standard) |
 | `order_type` | `"limit"` | `"limit"` or `"market"` |
 | `limit_offset_pct` | `0.001` | Limit price offset from market (0.1%) — buy above, sell below |
 | `max_etf_shares` | `10000` | Safety cap on ETF shares per trade |
@@ -275,7 +336,7 @@ Configuration is read from `config/config.json` (copy from `config_example.json`
 | 5 | Market guards | Weekend check, backwardation guard |
 | 6 | Separate client_id | `execution_client_id: 2` avoids IBKR connection conflicts |
 | 7 | Execution log | Every event logged to `output/execution/execution_log.jsonl` |
-| 8 | Position persistence | `output/execution/position_state.json` survives restarts |
+| 8 | Position persistence | `output/execution/position_state_{pair_id}.json` per-pair files survive restarts |
 | 9 | Sequential legs | ETF leg first, futures second; abort if ETF fails |
 | 10 | Fill timeout | Cancel unfilled orders after 30 seconds |
 
@@ -450,14 +511,14 @@ All output files are written to the `output/` directory:
 
 | File Pattern | Generated By | Contains |
 |--------------|--------------|----------|
-| `output/btc_basis_analysis_*.txt` | analyze | Human-readable report |
-| `output/btc_basis_analysis_*.json` | analyze | Structured market data, returns, signals, risks, positions |
+| `output/basis_analysis_{pair_id}_*.txt` | analyze | Per-pair human-readable report |
+| `output/basis_analysis_{pair_id}_*.json` | analyze | Per-pair structured market data, returns, signals, risks, positions |
 | `output/btc_basis_monitor.log` | monitor | Timestamped monitoring activity |
 | `output/alerts.log` | monitor | Trading alerts only (entry/exit/stop signals) |
 | `output/basis_history_*.json` | monitor | Time-series of basis data points |
 | `output/backtest_result_*.json` | backtest | Trade list, metrics (Sharpe, drawdown, win rate) |
-| `output/execution/execution_log.jsonl` | execution | Append-only log of all execution events (proposed/executed/rejected) |
-| `output/execution/position_state.json` | execution | Persisted open position state (survives restarts) |
+| `output/execution/execution_log.jsonl` | execution | Append-only log of all execution events with `pair_id` (proposed/executed/rejected) |
+| `output/execution/position_state_{pair_id}.json` | execution | Per-pair persisted open position state (survives restarts) |
 
 All JSON files use ISO-8601 timestamps and can be imported to Excel/pandas.
 

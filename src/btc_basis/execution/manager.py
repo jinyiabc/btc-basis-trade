@@ -34,10 +34,14 @@ class ExecutionManager(LoggingMixin):
         analyzer: BasisTradeAnalyzer,
         ibkr_host: str = "127.0.0.1",
         ibkr_port: Optional[int] = None,
+        pair=None,
     ):
         self.config = exec_config
         self.analyzer = analyzer
-        self.tracker = PositionTracker()
+        self.pair = pair  # PairConfig or None
+
+        pair_id = pair.pair_id if pair else "BTC"
+        self.tracker = PositionTracker(pair_id=pair_id)
         self.executor = IBKRExecutor(
             config=exec_config,
             position_tracker=self.tracker,
@@ -149,6 +153,7 @@ class ExecutionManager(LoggingMixin):
         log_path = Path(self.EXECUTION_LOG)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
+        event["pair_id"] = self.pair.pair_id if self.pair else "BTC"
         event["logged_at"] = datetime.now().isoformat()
         with open(log_path, "a") as f:
             f.write(json.dumps(event) + "\n")
@@ -245,7 +250,12 @@ class ExecutionManager(LoggingMixin):
         market: MarketData,
     ) -> str:
         """Build human-readable trade summary for confirmation."""
+        spot_sym = self.pair.spot_symbol if self.pair else self.config.spot_symbol
+        fut_sym = self.pair.futures_symbol if self.pair else self.config.futures_symbol
+        pair_id = self.pair.pair_id if self.pair else "BTC"
+
         lines = [
+            f"Pair:         {pair_id}",
             f"Signal:       {signal.value}",
             f"Reason:       {reason}",
             f"Action:       {action.value}",
@@ -259,10 +269,10 @@ class ExecutionManager(LoggingMixin):
 
         if action == TradeAction.OPEN:
             lines += [
-                f"ETF ({self.config.spot_symbol}):",
+                f"ETF ({spot_sym}):",
                 f"  BUY {sizing.get('etf_shares', 'N/A')} shares "
                 f"(~${sizing.get('etf_value', 0):,.2f})",
-                f"Futures ({self.config.futures_symbol}):",
+                f"Futures ({fut_sym}):",
                 f"  SELL {sizing.get('futures_contracts', 'N/A')} contracts "
                 f"(~${sizing.get('futures_value', 0):,.2f})",
             ]
@@ -293,6 +303,7 @@ class ExecutionManager(LoggingMixin):
             futures_contracts=futures_contracts,
             etf_price=market.etf_price,
             futures_price=market.futures_price,
+            pair=self.pair,
         )
 
         self._log_event({
@@ -307,7 +318,7 @@ class ExecutionManager(LoggingMixin):
 
     def _execute_close(self) -> None:
         """Execute a CLOSE action."""
-        etf_result, futures_result = self.executor.execute_exit_pair()
+        etf_result, futures_result = self.executor.execute_exit_pair(pair=self.pair)
 
         self._log_event({
             "event": "EXIT_RESULT",
@@ -322,7 +333,7 @@ class ExecutionManager(LoggingMixin):
     def _execute_reduce(self) -> None:
         """Execute a REDUCE action (50% partial exit)."""
         etf_result, futures_result = self.executor.execute_partial_exit(
-            exit_pct=0.5
+            exit_pct=0.5, pair=self.pair
         )
 
         self._log_event({

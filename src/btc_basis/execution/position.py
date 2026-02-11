@@ -18,6 +18,7 @@ from btc_basis.utils.logging import LoggingMixin
 class Position:
     """Current open position state."""
 
+    pair_id: str = "BTC"
     etf_shares: int = 0
     etf_symbol: str = "IBIT"
     etf_entry_price: float = 0.0
@@ -40,6 +41,7 @@ class Position:
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
+            "pair_id": self.pair_id,
             "etf_shares": self.etf_shares,
             "etf_symbol": self.etf_symbol,
             "etf_entry_price": self.etf_entry_price,
@@ -54,6 +56,7 @@ class Position:
     def from_dict(cls, data: dict) -> "Position":
         """Create Position from dictionary."""
         return cls(
+            pair_id=data.get("pair_id", "BTC"),
             etf_shares=data.get("etf_shares", 0),
             etf_symbol=data.get("etf_symbol", "IBIT"),
             etf_entry_price=data.get("etf_entry_price", 0.0),
@@ -68,10 +71,14 @@ class Position:
 class PositionTracker(LoggingMixin):
     """Load, save, and manage persisted position state."""
 
-    DEFAULT_PATH = "output/execution/position_state.json"
+    DEFAULT_DIR = "output/execution"
 
-    def __init__(self, path: Optional[str] = None):
-        self.path = Path(path or self.DEFAULT_PATH)
+    def __init__(self, path: Optional[str] = None, pair_id: str = "BTC"):
+        self.pair_id = pair_id
+        if path:
+            self.path = Path(path)
+        else:
+            self.path = Path(self.DEFAULT_DIR) / f"position_state_{pair_id.lower()}.json"
         self.position = self.load()
 
     def load(self) -> Position:

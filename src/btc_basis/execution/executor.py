@@ -107,20 +107,16 @@ class IBKRExecutor(LoggingMixin):
         self.ib.qualifyContracts(contract)
         return contract
 
-    def _create_futures_contract(self, symbol: str, expiry: Optional[str] = None):
-        """Create CME futures contract (same pattern as ibkr.py:239)."""
+    def _create_futures_contract(
+        self, symbol: str, expiry: Optional[str] = None, exchange: str = "CME"
+    ):
+        """Create futures contract for the given exchange."""
         from ib_insync import Future
         if expiry is None:
             expiry = get_front_month_expiry_str()
-        contract = Future(symbol, expiry, "CME")
+        contract = Future(symbol, expiry, exchange)
         self.ib.qualifyContracts(contract)
         return contract
-
-    # Tick sizes by futures symbol
-    FUTURES_TICK_SIZES = {
-        "MBT": 5,     # Micro BTC: $5
-        "BTC": 5,     # Standard BTC: $5
-    }
 
     @staticmethod
     def _round_to_tick(price: float, tick_size: float) -> float:
@@ -266,8 +262,7 @@ class IBKRExecutor(LoggingMixin):
             )
 
         try:
-            # Determine contract type based on symbol
-            is_futures = request.symbol not in ("IBIT", "FBTC", "GBTC")
+            is_futures = request.contract_type == "futures"
 
             if is_futures and self._is_cme_break():
                 self.log_warning(f"CME daily break (5-6 PM ET) — skipping {request.describe()}")
@@ -280,7 +275,9 @@ class IBKRExecutor(LoggingMixin):
             if not is_futures:
                 contract = self._create_etf_contract(request.symbol)
             else:
-                contract = self._create_futures_contract(request.symbol)
+                contract = self._create_futures_contract(
+                    request.symbol, exchange=request.futures_exchange
+                )
 
             order = self._create_order(
                 request.side,
@@ -306,12 +303,28 @@ class IBKRExecutor(LoggingMixin):
         etf_price: Optional[float] = None,
         futures_price: Optional[float] = None,
         futures_expiry: Optional[str] = None,
+        pair=None,
     ) -> Tuple[OrderResult, Optional[OrderResult]]:
         """
         Execute entry: BUY ETF then SELL futures.
 
         Aborts futures leg if ETF leg fails.
+
+        Args:
+            pair: Optional PairConfig. When provided, uses pair-specific symbols/exchange/tick_size.
         """
+        # Resolve pair-specific settings
+        if pair is not None:
+            spot_symbol = pair.spot_symbol
+            futures_symbol = pair.futures_symbol
+            futures_exchange = pair.futures_exchange
+            tick_size = pair.tick_size
+        else:
+            spot_symbol = self.config.spot_symbol
+            futures_symbol = self.config.futures_symbol
+            futures_exchange = "CME"
+            tick_size = 5.0
+
         # Calculate limit prices if using limit orders
         etf_limit = None
         futures_limit = None
@@ -320,8 +333,7 @@ class IBKRExecutor(LoggingMixin):
                 etf_limit = round(etf_price * (1 + self.config.limit_offset_pct), 2)
             if futures_price:
                 raw = futures_price * (1 - self.config.limit_offset_pct)
-                tick = self.FUTURES_TICK_SIZES.get(self.config.futures_symbol, 5)
-                futures_limit = self._round_to_tick(raw, tick)
+                futures_limit = self._round_to_tick(raw, tick_size)
 
         order_type = (
             OrderType.LIMIT if self.config.order_type == "limit" else OrderType.MARKET
@@ -330,12 +342,13 @@ class IBKRExecutor(LoggingMixin):
         # Leg 1: BUY ETF
         etf_request = OrderRequest(
             side=OrderSide.BUY,
-            symbol=self.config.spot_symbol,
+            symbol=spot_symbol,
             quantity=etf_shares,
             order_type=order_type,
             limit_price=etf_limit,
             signal="ENTRY",
             reason="Basis trade entry — spot leg",
+            contract_type="stock",
         )
 
         self.log(f"[1/2] ETF entry: {etf_request.describe()}")
@@ -351,12 +364,14 @@ class IBKRExecutor(LoggingMixin):
         # Leg 2: SELL futures
         futures_request = OrderRequest(
             side=OrderSide.SELL,
-            symbol=self.config.futures_symbol,
+            symbol=futures_symbol,
             quantity=futures_contracts,
             order_type=order_type,
             limit_price=futures_limit,
             signal="ENTRY",
             reason="Basis trade entry — futures leg",
+            contract_type="futures",
+            futures_exchange=futures_exchange,
         )
 
         self.log(f"[2/2] Futures entry: {futures_request.describe()}")
@@ -369,16 +384,19 @@ class IBKRExecutor(LoggingMixin):
                 etf_price=etf_result.fill_price or etf_price or 0,
                 futures_contracts=int(futures_result.filled_qty or futures_contracts),
                 futures_price=futures_result.fill_price or futures_price or 0,
-                etf_symbol=self.config.spot_symbol,
-                futures_symbol=self.config.futures_symbol,
+                etf_symbol=spot_symbol,
+                futures_symbol=futures_symbol,
                 futures_expiry=futures_expiry,
             )
 
         return etf_result, futures_result
 
-    def execute_exit_pair(self) -> Tuple[OrderResult, Optional[OrderResult]]:
+    def execute_exit_pair(self, pair=None) -> Tuple[OrderResult, Optional[OrderResult]]:
         """
         Execute full exit: SELL ETF + BUY futures using current position.
+
+        Args:
+            pair: Optional PairConfig for futures exchange routing.
         """
         pos = self.tracker.position
         if not pos.is_open:
@@ -392,6 +410,8 @@ class IBKRExecutor(LoggingMixin):
                 error="No open position",
             ), None
 
+        futures_exchange = pair.futures_exchange if pair else "CME"
+
         order_type = (
             OrderType.LIMIT if self.config.order_type == "limit" else OrderType.MARKET
         )
@@ -404,6 +424,7 @@ class IBKRExecutor(LoggingMixin):
             order_type=order_type,
             signal="EXIT",
             reason="Basis trade exit — spot leg",
+            contract_type="stock",
         )
 
         self.log(f"[1/2] ETF exit: {etf_request.describe()}")
@@ -417,6 +438,8 @@ class IBKRExecutor(LoggingMixin):
             order_type=order_type,
             signal="EXIT",
             reason="Basis trade exit — futures leg",
+            contract_type="futures",
+            futures_exchange=futures_exchange,
         )
 
         self.log(f"[2/2] Futures exit: {futures_request.describe()}")
@@ -431,9 +454,14 @@ class IBKRExecutor(LoggingMixin):
         return etf_result, futures_result
 
     def execute_partial_exit(
-        self, exit_pct: float = 0.5
+        self, exit_pct: float = 0.5, pair=None
     ) -> Tuple[OrderResult, Optional[OrderResult]]:
-        """Reduce both legs proportionally."""
+        """Reduce both legs proportionally.
+
+        Args:
+            exit_pct: Fraction to exit (default 0.5 = 50%).
+            pair: Optional PairConfig for futures exchange routing.
+        """
         pos = self.tracker.position
         if not pos.is_open:
             self.log_warning("No open position to reduce")
@@ -445,6 +473,8 @@ class IBKRExecutor(LoggingMixin):
                 order_request=dummy,
                 error="No open position",
             ), None
+
+        futures_exchange = pair.futures_exchange if pair else "CME"
 
         etf_to_sell = max(1, int(pos.etf_shares * exit_pct))
         contracts_to_close = max(1, int(pos.futures_contracts * exit_pct))
@@ -461,6 +491,7 @@ class IBKRExecutor(LoggingMixin):
             order_type=order_type,
             signal="PARTIAL_EXIT",
             reason=f"Partial exit ({exit_pct*100:.0f}%) — spot leg",
+            contract_type="stock",
         )
 
         self.log(f"[1/2] Partial ETF exit: {etf_request.describe()}")
@@ -474,6 +505,8 @@ class IBKRExecutor(LoggingMixin):
             order_type=order_type,
             signal="PARTIAL_EXIT",
             reason=f"Partial exit ({exit_pct*100:.0f}%) — futures leg",
+            contract_type="futures",
+            futures_exchange=futures_exchange,
         )
 
         self.log(f"[2/2] Partial futures exit: {futures_request.describe()}")
