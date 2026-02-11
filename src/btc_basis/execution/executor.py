@@ -7,8 +7,9 @@ separate client_id to avoid connection conflicts.
 """
 
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from btc_basis.execution.models import (
     ExecutionConfig,
@@ -99,9 +100,10 @@ class IBKRExecutor(LoggingMixin):
             self.connected = False
 
     def _create_etf_contract(self, symbol: str):
-        """Create ETF stock contract (same pattern as ibkr.py:186)."""
+        """Create ETF stock contract. Uses OVERNIGHT exchange during overnight session."""
         from ib_insync import Stock
-        contract = Stock(symbol, "SMART", "USD")
+        exchange = "OVERNIGHT" if self._is_overnight_session() else "SMART"
+        contract = Stock(symbol, exchange, "USD")
         self.ib.qualifyContracts(contract)
         return contract
 
@@ -114,14 +116,44 @@ class IBKRExecutor(LoggingMixin):
         self.ib.qualifyContracts(contract)
         return contract
 
+    # Tick sizes by futures symbol
+    FUTURES_TICK_SIZES = {
+        "MBT": 5,     # Micro BTC: $5
+        "BTC": 5,     # Standard BTC: $5
+    }
+
+    @staticmethod
+    def _round_to_tick(price: float, tick_size: float) -> float:
+        """Round price to nearest valid tick increment."""
+        return round(price / tick_size) * tick_size
+
     @staticmethod
     def _is_overnight_session() -> bool:
-        """Check if current time is in IBKR overnight session (8:00 PM - 3:50 AM ET)."""
-        et = timezone(timedelta(hours=-5))
-        now_et = datetime.now(et)
+        """Check if current time is in IBKR overnight session (8:00 PM - 3:50 AM ET).
+
+        IBKR US equity overnight session allows trading select ETFs (e.g. IBIT)
+        outside regular hours. Orders must use exchange='OVERNIGHT',
+        tif='OVERNIGHT', and outsideRth=False.
+        """
+        now_et = datetime.now(ZoneInfo("America/New_York"))
         hour, minute = now_et.hour, now_et.minute
         # 20:00 ET to 03:50 ET next day
         return hour >= 20 or (hour < 3) or (hour == 3 and minute < 50)
+
+    @staticmethod
+    def _is_cme_break() -> bool:
+        """Check if current time is in CME daily maintenance break.
+
+        CME Globex Bitcoin futures (BTC, MBT) trading hours:
+          Sunday 5:00 PM CT – Friday 4:00 PM CT (continuous)
+          Daily maintenance break: 4:00 PM – 5:00 PM CT (= 5:00 PM – 6:00 PM ET)
+
+        Orders submitted during the break stay in PendingSubmit and never
+        reach the exchange. Callers should wait or skip futures orders.
+        """
+        now_ct = datetime.now(ZoneInfo("America/Chicago"))
+        # Break is 4:00 PM - 5:00 PM CT (hour 16)
+        return now_ct.hour == 16
 
     def _create_order(
         self,
@@ -138,8 +170,8 @@ class IBKRExecutor(LoggingMixin):
         if order_type == OrderType.LIMIT and limit_price is not None:
             order = LimitOrder(action, quantity, limit_price)
             if self._is_overnight_session():
-                order.outsideRth = True
                 order.tif = "OVERNIGHT"
+                order.outsideRth = False
             else:
                 order.outsideRth = True
             return order
@@ -235,7 +267,17 @@ class IBKRExecutor(LoggingMixin):
 
         try:
             # Determine contract type based on symbol
-            if request.symbol in ("IBIT", "FBTC", "GBTC"):
+            is_futures = request.symbol not in ("IBIT", "FBTC", "GBTC")
+
+            if is_futures and self._is_cme_break():
+                self.log_warning(f"CME daily break (5-6 PM ET) — skipping {request.describe()}")
+                return OrderResult(
+                    status=OrderStatus.FAILED,
+                    order_request=request,
+                    error="CME daily maintenance break (5:00-6:00 PM ET)",
+                )
+
+            if not is_futures:
                 contract = self._create_etf_contract(request.symbol)
             else:
                 contract = self._create_futures_contract(request.symbol)
@@ -277,9 +319,9 @@ class IBKRExecutor(LoggingMixin):
             if etf_price:
                 etf_limit = round(etf_price * (1 + self.config.limit_offset_pct), 2)
             if futures_price:
-                futures_limit = round(
-                    futures_price * (1 - self.config.limit_offset_pct), 2
-                )
+                raw = futures_price * (1 - self.config.limit_offset_pct)
+                tick = self.FUTURES_TICK_SIZES.get(self.config.futures_symbol, 5)
+                futures_limit = self._round_to_tick(raw, tick)
 
         order_type = (
             OrderType.LIMIT if self.config.order_type == "limit" else OrderType.MARKET
